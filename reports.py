@@ -95,6 +95,9 @@ def receipt_text(order: dict) -> str:
 
 
 def document_html(order: dict, kind: str) -> str:
+    if order.get("schema_version") == 2:
+        from cost_print import html_document
+        return html_document(order, kind == "receipt")
     is_receipt = kind == "receipt"
     title = "Расчёт заказа" if is_receipt else "Отчёт по раскрою"
     page_class = "page receipt" if is_receipt else "page"
@@ -202,8 +205,14 @@ def _production_html(order, receipt=False):
         parts += [f'<p class="note">Комментарий технолога: {_safe(order["laser_comment"])}</p>']
         if c["warnings"]:
             parts += ['<p class="note">' + '<br>'.join(_safe(w) for w in c["warnings"]) + '</p>']
+        if order.get("cam_imports"):
+            parts += [_section("Источники импорта")]
+            for source in order["cam_imports"]:
+                parts.append(f'<p class="note">{_safe(source["filename"])} · {_safe(source["family"])} · {_safe(source["program"])}</p>')
+    if receipt and c["warnings"]:
+        parts.append('<p class="note">В расчёте есть замечания или незаполненные данные. Перед оплатой проверьте полный отчёт.</p>')
     parts += [f'<p class="note">{_safe(c["material_basis"])}</p>',
-              '<p class="legal">Документ не является кассовым чеком.</p>' if receipt else '<p class="note">Расчёт по заданным нормам. Импорт файлов и расчёт сварки пока не подключены.</p>']
+              '<p class="legal">Документ не является кассовым чеком.</p>' if receipt else '<p class="note">Расчёт по заданным нормам. Сварка пока не рассчитывается.</p>']
     return ''.join(parts)
 
 

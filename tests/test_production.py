@@ -141,7 +141,7 @@ class ProductionTests(unittest.TestCase):
         receipt = document_html(order, "receipt")
         self.assertIn("Полка &lt;А&gt;", report)
         self.assertIn("Стеллаж", report)
-        self.assertIn("Плановый расход краски", report)
+        self.assertIn("Сумма продажная с НДС", report)
         self.assertIn("Покрытие", receipt)
         self.assertNotIn("<А>", report)
 

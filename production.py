@@ -1,4 +1,4 @@
-"""Specification tree and transparent production estimates (no CAM parser)."""
+"""Specification tree and transparent production estimates."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -191,10 +191,12 @@ def transfer_laser_matches(order):
         if not rows or node["kind"] != "part":
             continue
         quantity = sum(numeric(r["quantity"], "Количество сопоставленной детали", positive=True) for r in rows)
-        if not order["laser_area_only"] and (not node["laser_minutes"] or order["laser_include_filled"]):
+        if not any(r.get("missing_time") for r in rows) and not order["laser_area_only"] and (not node["laser_minutes"] or order["laser_include_filled"]):
             node["laser_minutes"] = sum(r["minutes"] for r in rows) / quantity
-        node["area"] = sum(r["area"] * r["quantity"] for r in rows) / quantity
-        node["mass"] = sum(r["mass"] * r["quantity"] for r in rows) / quantity
+        if not any(r.get("missing_area") for r in rows):
+            node["area"] = sum(r["area"] * r["quantity"] for r in rows) / quantity
+        if not any(r.get("missing_mass") for r in rows):
+            node["mass"] = sum(r["mass"] * r["quantity"] for r in rows) / quantity
         count += 1
     return count
 
@@ -221,6 +223,10 @@ def calculate_production(source):
                                       * float(material.get("price_sheet", 0)), 2) if sheet_area else 0
         if not material:
             warnings.append(f"{node['name']}: материал не выбран")
+        if node.get("cam_generated") and not node["mass"]:
+            warnings.append(f"{node['name']}: масса не задана")
+        if node.get("stock_kind") == "tube" and (not node["area"] or not node["thickness"]):
+            warnings.append(f"{node['name']}: заполните площадь покраски и толщину стенки трубы")
         material_total += node["material_cost"]
         parts.append(node)
 
@@ -230,6 +236,12 @@ def calculate_production(source):
             row[key] = numeric(row.get(key, 0), "Лазерная резка: " + key)
         if row["waste_pct"] > 100:
             raise ValueError("Процент отходов в раскрое не должен превышать 100")
+        if row.get("missing_time") and not row["cut_minutes"]:
+            warnings.append(f"{row['material']}: время резки отсутствует в файле — итог времени неполный")
+        if row.get("missing_mass") and not row["weight"]:
+            warnings.append(f"{row['material']}: масса заготовки не задана — итог веса неполный")
+        if not row.get("customer_material") and not row.get("price"):
+            warnings.append(f"{row['material']}: цена материала равна нулю — итог стоимости неполный")
         laser["cutting"] += row["cut_minutes"]
         laser["sheets"] += row["sheets"]
         laser["weight"] += row["weight"] * row["quantity"]
@@ -295,6 +307,8 @@ def calculate_production(source):
         item["sum"] = round(item["quantity"] * item["price"], 2)
         extras += item["sum"]
     stage_total = round(sum(s["cost"] for s in results), 2)
+    for doc in order.get("cam_imports", []):
+        warnings.extend(f"{doc['filename']}: {message}" for message in doc.get("warnings", []))
     order["calculation"] = dict(tree=tree, parts=parts, stages=results, laser=laser, paint_area=area,
                                  quantity=sum(p["total_quantity"] for p in parts), bends=bends,
                                  mass=sum(p["total_mass"] for p in parts),

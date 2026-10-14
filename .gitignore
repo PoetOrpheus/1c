@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.vendor/
+.build-*/
+.inspection/
+.import-smoke/
+self-test-result.txt
+portable/self-test-result.txt
+data/
+portable/data/
+documents/
+portable/documents/

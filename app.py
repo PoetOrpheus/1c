@@ -62,8 +62,10 @@ class DocumentPreview(tk.Toplevel):
         self.order = order
         self.kind = kind
         title = "Расчётный чек" if kind == "receipt" else "Отчёт по раскрою"
+        if order.get("schema_version") == 2 and kind != "receipt":
+            title = "Плановая себестоимость"
         self.title(title)
-        self.geometry("900x760" if kind == "report" else "680x760")
+        self.geometry("1180x800" if order.get("schema_version") == 2 else ("900x760" if kind == "report" else "680x760"))
         self.minsize(640, 540)
         self.transient(parent.winfo_toplevel())
 
@@ -77,7 +79,11 @@ class DocumentPreview(tk.Toplevel):
 
         body = tk.Frame(self, bg="#dfe2e5", padx=12, pady=12)
         body.pack(fill="both", expand=True)
+        horizontal = ttk.Scrollbar(body, orient="horizontal")
+        horizontal.pack(side="bottom", fill="x")
         self.canvas = tk.Canvas(body, bg="#dfe2e5", highlightthickness=0)
+        horizontal.configure(command=self.canvas.xview)
+        self.canvas.configure(xscrollcommand=horizontal.set)
         scroll = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -110,6 +116,12 @@ class DocumentPreview(tk.Toplevel):
             self._build_report()
 
     def _resize_page(self, event) -> None:
+        if self.order.get("schema_version") == 2:
+            width = 1120
+            self.canvas.itemconfigure(self.page_window, width=width)
+            self.canvas.coords(self.page_window, max(width + 24, event.width) / 2, 12)
+            self._update_document_scroll()
+            return
         max_width = 790 if self.kind == "report" else 500
         width = min(max_width, max(500, event.width - 36))
         self.canvas.itemconfigure(self.page_window, width=width)
@@ -119,52 +131,11 @@ class DocumentPreview(tk.Toplevel):
     def _update_document_scroll(self):
         bounds = self.canvas.bbox("all")
         if bounds:
-            self.canvas.configure(scrollregion=(0, 0, self.canvas.winfo_width(), bounds[3] + 12))
+            self.canvas.configure(scrollregion=(0, 0, max(self.canvas.winfo_width(), bounds[2] + 12), bounds[3] + 12))
 
     def _build_production(self, kind):
-        order = self.order
-        calculation = order["calculation"]
-        self._document_header("Расчёт заказа" if kind == "receipt" else "Спецификация заказа",
-                              "РАСЧЁТНЫЙ ЧЕК" if kind == "receipt" else "ПРОИЗВОДСТВО")
-        self._info_grid([("Заказчик", order.get("customer") or "Не указан"), ("Изделие", order["name"])])
-        if kind != "receipt":
-            self._section_title("Дерево спецификации")
-            box = tk.Frame(self.page, bg="white")
-            box.pack(fill="x")
-            self._table_row(box, ("Изделие / деталь", "На узел", "Всего"), header=True)
-            for node in calculation["tree"]:
-                self._table_row(box, ("  " * node["depth"] + node["name"], number(node["quantity"]), number(node["total_quantity"])))
-            self._section_title("Параметры производства")
-            self._info_grid([("Площадь покраски", f"{number(calculation['paint_area'])} м²"),
-                             ("Масса", f"{number(calculation['mass'])} кг"),
-                             ("Количество гибов", number(calculation["bends"])),
-                             ("Общее время", f"{number(calculation['minutes'])} мин")])
-        self._section_title("Стоимость и этапы")
-        box = tk.Frame(self.page, bg="white")
-        box.pack(fill="x")
-        self._table_row(box, ("Позиция", "Кол-во / мин", "Сумма"), header=True)
-        self._table_row(box, ("Материал", "", money(order["totals"]["material"])))
-        for stage in calculation["stages"]:
-            if stage["enabled"]:
-                self._table_row(box, (stage["name"] + (" · ОТК" if stage["otk"] else ""),
-                                     f"{number(stage['minutes'])} мин", money(stage["cost"])))
-        for item in order["extras"]:
-            self._table_row(box, (item["name"], f"{number(item['quantity'])} {item['unit']}", money(item["sum"])))
-        self._table_row(box, ("ИТОГО", "", money(order["totals"]["grand"])), total=True)
-        if kind != "receipt":
-            self._section_title("Нормы и параметры включённых этапов")
-            from production import FIELDS, COMMON_FIELDS
-            for stage in order["stages"]:
-                if not stage["enabled"] or stage["kind"] == "welding":
-                    continue
-                self._label(self.page, stage["name"], font=("Segoe UI Semibold", 10), anchor="w").pack(fill="x", pady=(12, 4))
-                values = [(title, number(stage["settings"][key])) for key, title, _ in FIELDS[stage["kind"]] + COMMON_FIELDS]
-                for title, value in values:
-                    self._label(self.page, f"{title}: {value}", font=("Segoe UI", 9), anchor="w", wraplength=650, justify="left").pack(fill="x")
-        self._label(self.page, calculation["material_basis"], font=("Segoe UI", 9), fg=COLORS["muted"],
-                    wraplength=440 if kind == "receipt" else 650, justify="left").pack(fill="x", pady=(16, 4))
-        self._label(self.page, "Документ не является кассовым чеком." if kind == "receipt" else "Расчёт по заданным нормам. Сварка пока не рассчитывается.",
-                    font=("Segoe UI", 9), fg=COLORS["muted"], wraplength=440 if kind == "receipt" else 650).pack(fill="x")
+        from cost_print import build_preview
+        build_preview(self.page, self.order, kind == "receipt")
 
     @staticmethod
     def _label(parent, text, *, font=("Segoe UI", 10), fg="#25282a", bg="white", **kwargs):

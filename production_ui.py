@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from queue import Queue, Empty
+from threading import Thread
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -102,6 +104,12 @@ class FormDialog(tk.Toplevel):
             return
         self.destroy()
 
+    def destroy(self):
+        parent = self.master
+        super().destroy()
+        if isinstance(parent, tk.Toplevel) and parent.winfo_exists():
+            parent.grab_set()
+
 
 class ProductionTab(ttk.Frame):
     def __init__(self, parent, db, status, history_refresh, preview):
@@ -177,9 +185,23 @@ class ProductionTab(ttk.Frame):
         button(bar, "Записать заказ", self.save_order, True)
         button(bar, "Отчёт", lambda: self.show_document("report"))
         button(bar, "Расчётный чек", lambda: self.show_document("receipt"))
+        button(bar, "НДС и наценки", self.edit_finance)
         button(bar, "Новый заказ", self.reset)
         self.total_var = tk.StringVar()
         label(bar, "", textvariable=self.total_var, font=("Segoe UI Semibold", 11)).pack(side="right")
+
+    def edit_finance(self):
+        from costing import DEFAULT_FINANCE
+        values = DEFAULT_FINANCE | self.order.get("finance", {})
+        def save(result):
+            self.order["finance"] = result
+            self._changed()
+        FormDialog(self, "Настройки стоимости заказа", [
+            ("vat", "Ставка НДС, %", values["vat"], "number"),
+            ("material_markup", "Наценка на материалы, %", values["material_markup"], "number"),
+            ("work_markup", "Наценка на работы, %", values["work_markup"], "number")], save,
+            "Все цены и тарифы вводятся с НДС. НДС выделяется из стоимости, а не добавляется сверху. "
+            "Наценки определяют продажную сумму. Настройки сохраняются вместе с заказом.")
 
     def _tree_tab(self):
         tab = self.tabs["tree"]
@@ -253,7 +275,7 @@ class ProductionTab(ttk.Frame):
             values["parent_id"] = parents[values.pop("parent")]
             if node["kind"] == "part":
                 numeric(values["width"], "Ширина", positive=True)
-                numeric(values["height"], "Высота", positive=True)
+                numeric(values["height"], "Высота", positive=node.get("stock_kind") != "tube")
                 values["material"] = deepcopy(materials.get(values.pop("material_choice"), {}))
                 if values["material"] and values["material"].get("id") != node.get("material", {}).get("id"):
                     values["thickness"] = values["material"]["thickness"]
@@ -466,13 +488,13 @@ class ProductionTab(ttk.Frame):
         self.directory_var = tk.StringVar(value=self.order["laser_directory"])
         ttk.Entry(bar, textvariable=self.directory_var, width=30, style="Prod.TEntry").pack(side="left")
         button(bar, "…", self.choose_directory)
-        button(bar, "Заполнить из файлов КАМСистем", self.import_placeholder)
+        button(bar, "Импорт файлов…", self.import_files)
         self.area_only_var = tk.BooleanVar(value=self.order["laser_area_only"])
         ttk.Checkbutton(bar, text="Только площадь и массу", variable=self.area_only_var,
                         style="Prod.TCheckbutton", command=self._changed).pack(side="left", padx=8)
-        button(bar, "Загрузить данные раскроев", self.import_placeholder)
+        button(bar, "Импорт папки", self.import_directory)
         self.directory_var.trace_add("write", self._changed)
-        label(tab, "Импорт файлов — заглушка. Пока строки раскроя и сопоставления вводятся вручную.", foreground="#a47911").pack(anchor="w", pady=4)
+        label(tab, "Импорт: BIT (XLSX / PDF), TruTops (HTML), Sekirus (PDF). Перед добавлением — просмотр и сопоставление деталей.", foreground="#6b7278").pack(anchor="w", pady=4)
         params = ttk.Frame(tab, style="Prod.TFrame")
         params.pack(fill="x")
         stage = next(s for s in self.order["stages"] if s["kind"] == "laser")
@@ -498,6 +520,7 @@ class ProductionTab(ttk.Frame):
         button(toolbar, "Удалить", lambda: self.remove_row("laser_rows", self.laser_tree))
         button(toolbar, "↑", lambda: self.reorder_row("laser_rows", self.laser_tree, -1))
         button(toolbar, "↓", lambda: self.reorder_row("laser_rows", self.laser_tree, 1))
+        button(toolbar, "Источники импорта", self.show_import_sources)
         self.laser_search = tk.StringVar()
         ttk.Entry(toolbar, textvariable=self.laser_search, width=22).pack(side="right", padx=5)
         label(toolbar, "Поиск:").pack(side="right")
@@ -542,11 +565,101 @@ class ProductionTab(ttk.Frame):
         if chosen:
             self.directory_var.set(chosen)
 
-    def import_placeholder(self):
-        self.flush()
-        messagebox.showinfo("Импорт лазерной резки — заглушка",
-            "Загрузка из файлов пока не реализована. После получения образцов будет подключён разбор их формата.\n\n"
-            "Каталог и параметры сохраняются. Данные не загружены и не изменены. Сейчас можно добавить строки вручную.", parent=self)
+    def import_files(self):
+        paths = filedialog.askopenfilenames(parent=self, title="Выберите один или несколько отчётов раскроя",
+            initialdir=self.directory_var.get() or None,
+            filetypes=[("Отчёты раскроя", "*.xlsx *.pdf *.html *.htm"), ("Все файлы", "*.*")])
+        if paths:
+            self.directory_var.set(str(Path(paths[0]).parent))
+            self.start_import(paths)
+
+    def import_directory(self):
+        from cam_import import SUPPORTED
+        directory = self.directory_var.get().strip()
+        if not directory or not Path(directory).is_dir():
+            directory = filedialog.askdirectory(parent=self, title="Папка с отчётами раскроя")
+        if not directory:
+            return
+        self.directory_var.set(directory)
+        try:
+            paths = [p for p in Path(directory).iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED]
+        except OSError as error:
+            messagebox.showerror("Импорт папки", str(error), parent=self)
+            return
+        if not paths:
+            messagebox.showinfo("Импорт папки", "В выбранной папке нет XLSX, PDF или HTML. Вложенные папки не просматриваются.", parent=self)
+            return
+        self.start_import(paths)
+
+    def start_import(self, paths):
+        if not self.flush():
+            return
+        if len(paths) > 200:
+            messagebox.showerror("Импорт", "Выберите не больше 200 файлов за один раз.", parent=self)
+            return
+        from cam_import import read_batch
+        from cam_import_ui import ImportPreview
+        progress = tk.Toplevel(self)
+        progress.title("Чтение файлов раскроя")
+        progress.geometry("600x160")
+        progress.transient(self.winfo_toplevel())
+        progress.grab_set()
+        progress.protocol("WM_DELETE_WINDOW", lambda: None)
+        text = tk.StringVar(value="Чтение данных…")
+        ttk.Label(progress, textvariable=text, wraplength=560).pack(padx=18, pady=15)
+        bar = ttk.Progressbar(progress, mode="determinate", maximum=len(paths))
+        bar.pack(fill="x", padx=18)
+        queue = Queue()
+        def worker():
+            try:
+                batch = read_batch(paths, lambda index, total, name: queue.put(("progress", (index, total, name))))
+                queue.put(("done", batch))
+            except Exception as error:
+                queue.put(("error", str(error)))
+        def poll():
+            if not self.winfo_exists():
+                return
+            try:
+                while True:
+                    kind, payload = queue.get_nowait()
+                    if kind == "progress":
+                        index, total, name = payload
+                        text.set(f"{index+1} из {total}: {name}")
+                        bar["value"] = index
+                    else:
+                        progress.destroy()
+                        if kind == "error":
+                            messagebox.showerror("Импорт не выполнен", payload, parent=self)
+                        else:
+                            ImportPreview(self, payload)
+                        return
+            except Empty:
+                self.after(80, poll)
+        Thread(target=worker, daemon=True).start()
+        self.after(80, poll)
+
+    def show_import_sources(self):
+        imports = self.order.get("cam_imports", [])
+        if not imports:
+            messagebox.showinfo("Источники импорта", "В этом заказе ещё нет импортированных раскроев.", parent=self)
+            return
+        window = tk.Toplevel(self)
+        window.title("Источники и замечания импорта")
+        window.geometry("950x650")
+        window.transient(self.winfo_toplevel())
+        box = tk.Text(window, wrap="word", padx=12, pady=12, font=("Segoe UI", 10))
+        scroll = ttk.Scrollbar(window, command=box.yview)
+        scroll.pack(side="right", fill="y")
+        box.configure(yscrollcommand=scroll.set)
+        box.pack(fill="both", expand=True)
+        for doc in imports:
+            box.insert("end", f"{doc['filename']} · {doc['family']} · {doc['program']}\n{doc['source']}\n")
+            box.insert("end", "\n".join(doc["warnings"]) + "\n")
+            for part in doc["parts"]:
+                mass = part.get("source_mass", part.get("mass"))
+                box.insert("end", f"  {part['name']}: {part['quantity']} шт.; исходная масса 1 шт.: {mass if mass is not None else 'нет'} кг\n")
+            box.insert("end", "\n")
+        box.configure(state="disabled")
 
     def edit_laser(self, edit=False):
         selected = self.laser_tree.selection()
@@ -600,6 +713,10 @@ class ProductionTab(ttk.Frame):
             if not values["name"]:
                 raise ValueError("Укажите наименование")
             values["node_id"] = choices[values.pop("match")]
+            if edit:
+                for field, flag in (("minutes", "missing_time"), ("area", "missing_area"), ("mass", "missing_mass")):
+                    if values[field] != old[field]:
+                        row[flag] = False
             row.update(values)
             if edit:
                 self.order["laser_unmatched"][self.order["laser_unmatched"].index(old)] = row
@@ -655,7 +772,8 @@ class ProductionTab(ttk.Frame):
         choices = {f"{r['name']} [№{r['id']}]": r for r in self.db.list_records("extras", active_only=True)}
         fields = [("catalog", "Из справочника", "— Ввести вручную —", ["— Ввести вручную —", *choices]),
                   ("name", "Наименование", row["name"], "text"), ("unit", "Единица", row["unit"], "text"),
-                  ("quantity", "Количество", row["quantity"], "number"), ("price", "Цена, ₽", row["price"], "number")]
+                  ("quantity", "Количество", row["quantity"], "number"), ("price", "Цена, ₽", row["price"], "number"),
+                  ("cost_group", "Раздел отчёта", row.get("cost_group", "Работы"), ["Работы", "Материалы"])]
         def save(values):
             ref = choices.get(values.pop("catalog"))
             if ref:
@@ -807,8 +925,8 @@ class ProductionTab(ttk.Frame):
         self.unmatched_tree.delete(*self.unmatched_tree.get_children())
         nodes = {n["id"]: n["name"] for n in self.order["nodes"]}
         for row in self.order["laser_unmatched"]:
-            self.unmatched_tree.insert("", "end", iid=row["id"], values=(row["name"], row["quantity"], number(row["minutes"]),
-                nodes.get(row["node_id"], "—"), number(row["area"]), number(row["mass"])))
+            self.unmatched_tree.insert("", "end", iid=row["id"], values=(row["name"], row["quantity"], "—" if row.get("missing_time") else number(row["minutes"]),
+                nodes.get(row["node_id"], "—"), "—" if row.get("missing_area") else number(row["area"]), "—" if row.get("missing_mass") else number(row["mass"])))
 
     def _render_extras(self):
         self.extras_tree.delete(*self.extras_tree.get_children())

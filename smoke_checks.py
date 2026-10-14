@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import tkinter as tk
+import time
 
 from production import new_order, new_node, calculate_production
 
@@ -28,7 +29,7 @@ def sample_specification(db):
     return calculate_production(order)
 
 
-def run_gui_checks(output_dir):
+def run_gui_checks(output_dir, fixture_dir=None):
     import app as app_module
     from app import Application, DocumentPreview
     from production_ui import FormDialog
@@ -49,6 +50,16 @@ def run_gui_checks(output_dir):
             assert len(tab.stages_tree.get_children()) == 34
             assert len(tab.tabs) == 10
             assert tab.calculate()["calculation"]["quantity"] == 16
+            tab.edit_finance()
+            finance_dialog = next(w for w in tab.winfo_children() if isinstance(w, FormDialog))
+            finance_dialog.variables["vat"].set("22")
+            finance_dialog.variables["material_markup"].set("10")
+            finance_dialog.variables["work_markup"].set("20")
+            finance_dialog.save()
+            assert tab.flush()
+            assert tab.order["finance"]["vat"] == 22
+            from costing import cost_document
+            assert cost_document(tab.order)["totals"]["Всего"]["sale"] > cost_document(tab.order)["totals"]["Всего"]["cost"]
 
             # Exercise the real part form and save callback.
             root = tab.order["nodes"][0]
@@ -107,7 +118,7 @@ def run_gui_checks(output_dir):
                 application.update()
                 assert doc.page.winfo_height() > 200
                 html = document_html(tab.order, kind)
-                assert "Стеллаж" in html and "ИТОГО" in html
+                assert "Стеллаж" in html and "Всего сумма заказа с НДС:" in html
                 doc.destroy()
             # Old calculation remains available.
             legacy = application.quick_order_tab.calculate(show_error=False)
@@ -115,8 +126,60 @@ def run_gui_checks(output_dir):
             legacy_preview = DocumentPreview(tab, legacy, "report")
             application.update()
             legacy_preview.destroy()
+            import_summary = ""
+            if fixture_dir:
+                from cam_import import read_batch
+                from cam_import_ui import ImportPreview
+                batch = read_batch(Path(fixture_dir).iterdir())
+                assert not batch["errors"], batch["errors"]
+                assert len(batch["documents"]) == 9
+                assert len(batch["duplicates"]) == 4
+                tab.load_order(new_order(application.db.next_order_number()), None)
+                # Preview/cancel must not create a single position or database order.
+                untouched = deepcopy(tab.order)
+                tab.start_import(list(Path(fixture_dir).iterdir()))
+                deadline = time.monotonic() + 20
+                preview = None
+                while time.monotonic() < deadline:
+                    application.update()
+                    preview = next((w for w in tab.winfo_children() if isinstance(w, ImportPreview)), None)
+                    if preview:
+                        break
+                    time.sleep(.02)
+                assert preview is not None, "Фоновое чтение не открыло просмотр импорта"
+                assert len(preview.parts_tree.get_children()) == 41
+                preview.destroy()
+                assert tab.order == untouched
+                preview = ImportPreview(tab, batch)
+                preview.docs_tree.selection_set(batch["documents"][0]["key"])
+                preview.edit_document()
+                dialog = next(w for w in preview.winfo_children() if isinstance(w, FormDialog))
+                dialog.variables["price"].set("1000")
+                dialog.save()
+                assert preview.grab_current() == preview
+                application.update()
+                preview.apply()
+                application.update()
+                assert len(tab.order["laser_rows"]) == 9
+                assert len(tab.order["laser_unmatched"]) == 45
+                assert tab.order["calculation"]["quantity"] == 152
+                assert len(tab.order["nodes"]) == 42
+                assert tab.order["totals"]["material"] == 1000
+                tab.save_order()
+                restored = application.db.get_order(tab.saved_id)
+                tab.load_order(restored, tab.saved_id)
+                assert len(tab.order["cam_imports"]) == 9
+                again = ImportPreview(tab, batch)
+                assert not any(again.included.values())
+                again.destroy()
+                for kind in ("report", "receipt"):
+                    doc = DocumentPreview(tab, tab.order, kind)
+                    application.update()
+                    assert "Sekirus.pdf" in document_html(tab.order, "report")
+                    doc.destroy()
+                import_summary = "import=13 files,9 nests,41 unique parts,152 pieces,4 duplicate pairs; cancel,preview,pricing,history,documents=OK\n"
             assert not errors, errors
-            return f"OK\nstages=34\ntabs=10\nparts={tab.order['calculation']['quantity']}\ntotal={tab.order['totals']['grand']}\nchecks=dialogs,calculations,flags,draft,history,documents,legacy\n"
+            return f"OK\nstages=34\ntabs=10\nparts={tab.order['calculation']['quantity']}\ntotal={tab.order['totals']['grand']}\nchecks=dialogs,calculations,flags,draft,history,documents,legacy\n" + import_summary
         finally:
             if application is not None:
                 if application.order_tab.pending:

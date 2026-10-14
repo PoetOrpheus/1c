@@ -17,7 +17,10 @@ def self_test() -> int:
     result_path = APP_DIR / "self-test-result.txt"
     try:
         from smoke_checks import run_gui_checks
-        result_path.write_text(run_gui_checks(APP_DIR), encoding="utf-8")
+        fixtures = None
+        if "--test-import-dir" in sys.argv:
+            fixtures = Path(sys.argv[sys.argv.index("--test-import-dir") + 1])
+        result_path.write_text(run_gui_checks(APP_DIR, fixtures), encoding="utf-8")
         return 0
     except Exception:
         result_path.write_text("FAILED\n" + traceback.format_exc(), encoding="utf-8")
