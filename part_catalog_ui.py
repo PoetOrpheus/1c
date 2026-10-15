@@ -29,8 +29,7 @@ class PartsManager(ttk.Frame):
         search.pack(fill='x',pady=(0,10))
         ttk.Label(search,text='Поиск детали').pack(side='left',padx=(0,8))
         self.query = tk.StringVar()
-        ttk.Entry(search,textvariable=self.query,width=42).pack(side='left')
-        ttk.Label(search,text='Папки содержат шаблоны деталей, не заказы.',style='Muted.TLabel').pack(side='right')
+        ttk.Entry(search,textvariable=self.query,width=32).pack(side='left', fill='x', expand=True)
         self.tree = table(self,[('code','Обозначение',130,'w'),('size','Размеры, мм',150,'center'),
                                ('material','Материал',180,'w'),('qty','Кол-во',65,'center')],tree=True)
         self.tree.configure(selectmode='extended')

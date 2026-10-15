@@ -7,11 +7,24 @@ from queue import Queue, Empty
 from threading import Thread
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from ui_theme import AutoScrollbar
+from ui_theme import AutoScrollbar, wheel_area, ui_font, FlagButton
 
 from production import (COMMON_FIELDS, FIELDS, new_order, new_node, numeric, uid,
-                        flatten_nodes, descendants, move_node, copy_branch, calculate_production, transfer_laser_matches)
+                        flatten_nodes, descendants, move_node, copy_branch, calculate_production, transfer_laser_matches,
+                        new_auxiliary_stage, prepare_order_stages)
 from reports import money, number
+
+
+LASER_COLUMNS = [
+    ('n', '№', 42, 'center'), ('material', 'Материал', 230, 'w'),
+    ('characteristic', 'Формат листа / трубы', 170, 'w'), ('thickness', 'Толщина, мм', 115, 'center'),
+    ('coef', 'Коэф. расхода', 120, 'e'), ('quantity', 'Расход, ед.', 110, 'e'),
+    ('waste_pct', 'Отходы, %', 105, 'e'), ('center', 'Рабочий центр', 170, 'w'),
+    ('cut_minutes', 'Резка, мин', 110, 'e'), ('sheets', 'Сменяемых листов', 155, 'center'),
+    ('change', 'Смена листов, мин', 155, 'e'), ('weight', 'Масса ед., кг', 115, 'e'),
+    ('extra_minutes', 'Доп. время, мин', 140, 'e'), ('total', 'Всего, мин', 110, 'e'),
+    ('blank', 'Минимальная заготовка', 200, 'w'), ('customer_material', 'Сырьё давальца', 145, 'center'),
+]
 
 
 def label(parent, text, **kw):
@@ -41,28 +54,24 @@ def table(parent, columns, *, tree=False, height=10):
     widget.grid(row=0, column=0, sticky="nsew")
     vertical.grid(row=0, column=1, sticky="ns")
     horizontal.grid(row=1, column=0, sticky="ew")
-    widget.tag_configure("assembly", background="#f1f5f9", font=("Segoe UI Semibold", 9))
+    widget.tag_configure("assembly", background="#f1f5f9", font=(ui_font(parent), 11, 'bold'))
     widget.tag_configure("alternate", background="#fafbfd")
     widget.tag_configure("disabled", foreground="#969696")
     return widget
 
 
-class FormDialog(tk.Toplevel):
+class FormPanel(ttk.Frame):
     """Fields: key, label, default, type (text/number/int/bool/choices)."""
-    def __init__(self, parent, title, fields, on_save, note=""):
+    def __init__(self, parent, fields, on_save, on_close, note=""):
         super().__init__(parent)
-        self.title(title)
-        self.geometry(f"720x{min(840, 170 + len(fields) * 36)}")
-        self.minsize(620, 380)
-        self.transient(parent.winfo_toplevel())
+        self.on_close = on_close
         self.fields, self.on_save, self.variables = fields, on_save, {}
-        self.configure(bg="white")
         footer = ttk.Frame(self, padding=10)
         footer.pack(side="bottom", fill="x")
         self.error = tk.StringVar()
         ttk.Label(footer, textvariable=self.error, foreground="#c62828", wraplength=640).pack(fill="x")
         button(footer, "Записать и закрыть", self.save, True)
-        button(footer, "Отмена", self.destroy)
+        button(footer, "Отмена", self.on_close)
         canvas = tk.Canvas(self, background="white", highlightthickness=0)
         scroll = AutoScrollbar(self, command=canvas.yview)
         scroll.pack(side="right", fill="y")
@@ -72,13 +81,17 @@ class FormDialog(tk.Toplevel):
         window = canvas.create_window(0, 0, anchor="nw", window=form)
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         form.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        form.columnconfigure(1, weight=1)
+        wheel_area(canvas, form)
+        form.columnconfigure(0, weight=1, uniform='fields')
+        form.columnconfigure(1, weight=1, uniform='fields')
         if note:
             label(form, note, wraplength=650, foreground="#6b7278").grid(row=0, columnspan=2, sticky="w", pady=(0, 12))
         for row, (key, title, value, kind) in enumerate(fields, 1):
             var = tk.BooleanVar(value=value) if kind == "bool" else tk.StringVar(value=str(value))
             self.variables[key] = var
-            label(form, title).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=5)
+            caption = label(form, title, wraplength=320)
+            caption.grid(row=row, column=0, sticky="w", padx=(0, 14), pady=7)
+            caption.bind('<Configure>', lambda e: e.widget.configure(wraplength=max(160, form.winfo_width()//2-32)))
             if kind == "bool":
                 entry = ttk.Checkbutton(form, variable=var, style="Prod.TCheckbutton")
             elif isinstance(kind, list):
@@ -86,10 +99,6 @@ class FormDialog(tk.Toplevel):
             else:
                 entry = ttk.Entry(form, textvariable=var, width=34, style="Prod.TEntry")
             entry.grid(row=row, column=1, sticky="ew", pady=5)
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.bind("<Control-Return>", lambda e: self.save())
-        self.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
-        self.grab_set()
 
     def save(self):
         try:
@@ -103,7 +112,27 @@ class FormDialog(tk.Toplevel):
         except (ValueError, KeyError) as error:
             self.error.set(str(error))
             return
-        self.destroy()
+        self.on_close()
+
+
+class FormDialog(tk.Toplevel):
+    def __init__(self, parent, title, fields, on_save, note=""):
+        super().__init__(parent)
+        self.title(title)
+        self.configure(bg='#f5f7fa')
+        self.geometry(f"820x{min(780, self.winfo_screenheight()-120, 190 + len(fields)*46)}")
+        self.minsize(680, 360)
+        self.transient(parent.winfo_toplevel())
+        self.panel = FormPanel(self, fields, on_save, self.destroy, note)
+        self.panel.pack(fill='both', expand=True)
+        self.variables, self.error = self.panel.variables, self.panel.error
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.bind('<Control-Return>', lambda e: self.save())
+        self.wait_visibility()
+        self.grab_set()
+
+    def save(self):
+        self.panel.save()
 
     def destroy(self):
         parent = self.master
@@ -113,6 +142,17 @@ class FormDialog(tk.Toplevel):
 
 
 class ProductionTab(ttk.Frame):
+    SECTION_KINDS = {
+        "laser": {"laser"},
+        "filing": {"filing"},
+        "bending": {"bending"},
+        "welding": {"welding"},
+        "painting": {"painting"},
+        "assembly": {"assembly"},
+        "packing": {"packing"},
+        "services": {"cooperation", "additional", "auxiliary"},
+    }
+
     def __init__(self, parent, db, status, history_refresh, preview, draft_key="production_draft"):
         super().__init__(parent, style="Prod.TFrame")
         self.db, self.status, self.history_refresh, self.preview = db, status, history_refresh, preview
@@ -121,6 +161,7 @@ class ProductionTab(ttk.Frame):
         self.order = draft["order"] if draft else new_order(db.next_order_number())
         if not draft and db.get_state("production_stage_defaults"):
             self.order["stages"] = db.get_state("production_stage_defaults")
+        self.order = prepare_order_stages(self.order)
         self.saved_id = draft.get("saved_id") if draft else None
         self.pending = None
         self.loading = False
@@ -159,15 +200,18 @@ class ProductionTab(ttk.Frame):
         self.customer_var = tk.StringVar(value=self.order["customer"])
         self.name_var = tk.StringVar(value=self.order["name"])
         ttk.Label(title, text="Заказ", style="PageTitle.TLabel").pack(side="left", padx=(0,8))
-        ttk.Label(title, textvariable=self.number_var, style="PageTitle.TLabel").pack(side="left")
-        ttk.Label(title, text="Состав и расчёт", style="Muted.TLabel").pack(side="left", padx=18)
+        ttk.Entry(title, textvariable=self.number_var, width=22,
+                  font=(ui_font(self), 14)).pack(side="left")
         ttk.Button(title, text="Сохранить заказ", style="Accent.TButton", command=self.save_order).pack(side="right")
         metadata = ttk.Frame(frame)
         metadata.pack(fill="x")
-        label(metadata, "Заказчик").pack(side="left", padx=(0,8))
-        ttk.Entry(metadata, textvariable=self.customer_var, width=30).pack(side="left")
-        label(metadata, "Изделие").pack(side="left", padx=(20,8))
-        ttk.Entry(metadata, textvariable=self.name_var, width=38).pack(side="left")
+        metadata.columnconfigure(1, weight=1)
+        metadata.columnconfigure(3, weight=1)
+        label(metadata, "Заказчик").grid(row=0, column=0, padx=(0,10))
+        ttk.Entry(metadata, textvariable=self.customer_var, width=20).grid(row=0, column=1, sticky='ew')
+        label(metadata, "Изделие").grid(row=0, column=2, padx=(24,10))
+        ttk.Entry(metadata, textvariable=self.name_var, width=26).grid(row=0, column=3, sticky='ew')
+        self.number_var.trace_add("write", self._changed)
         self.customer_var.trace_add("write", self._changed)
         self.name_var.trace_add("write", self._changed)
 
@@ -176,18 +220,23 @@ class ProductionTab(ttk.Frame):
         footer.pack(side="bottom",fill="x")
         self.error_var=tk.StringVar()
         warning=ttk.Label(footer,textvariable=self.error_var,foreground="#a87930")
-        warning.pack(fill="x",pady=(0,8))
         warning.bind("<Configure>",lambda e:warning.configure(wraplength=max(100,e.width-10)))
-        card=ttk.Frame(footer,style="Card.TFrame",padding=(20,14))
+        card=ttk.Frame(footer,style="Card.TFrame",padding=(16,10))
         card.pack(fill="x")
+        def show_warning(*args):
+            if self.error_var.get():
+                warning.pack(fill='x', pady=(0,8), before=card)
+            else:
+                warning.pack_forget()
+        self.error_var.trace_add('write', show_warning)
         card.columnconfigure(2,weight=1)
         self.overview_vars={}
         for index,(key,title) in enumerate((("material","Материалы"),("work","Работы"),("sale","Итого с НДС"))):
             column=3 if key=="sale" else index
-            ttk.Label(card,text=title,style="Card.TLabel",foreground="#8290a3").grid(row=0,column=column,sticky="w",padx=(0,24))
+            ttk.Label(card,text=title,style="Card.TLabel",foreground="#64748b").grid(row=0,column=column,sticky="w",padx=(0,24))
             var=tk.StringVar(value="0,00 ₽")
             self.overview_vars[key]=var
-            ttk.Label(card,textvariable=var,style="Card.TLabel",font=("Segoe UI Semibold",14)).grid(row=1,column=column,sticky="w",padx=(0,24),pady=(6,0))
+            ttk.Label(card,textvariable=var,style="Card.TLabel",font=(ui_font(self),14,'bold')).grid(row=1,column=column,sticky="w",padx=(0,24),pady=(6,0))
         actions=ttk.Frame(card,style="Surface.TFrame")
         actions.grid(row=0,column=4,rowspan=2,sticky="e")
         ttk.Button(actions,text="Отчёт",style="Accent.TButton",command=lambda:self.show_document("report")).grid(row=0,column=0,padx=3)
@@ -214,13 +263,15 @@ class ProductionTab(ttk.Frame):
         bar = ttk.Frame(tab, style="Prod.TFrame")
         bar.pack(fill="x")
         for title,command in (("+ Изделие",lambda:self.edit_node(kind="assembly", root=True)),
-                              ("+ Узел",lambda:self.edit_node(kind="assembly")),("+ Деталь",self.edit_node)):
+                              ("+ Узел",lambda:self.edit_node(kind="assembly")),
+                              ("+ Деталь",self.open_parts_catalog)):
             ttk.Button(bar,text=title,style="Compact.TButton",command=command).pack(side="left",padx=(0,6),pady=5)
         ttk.Button(bar,text="Проверить расчёт",style="Compact.TButton",command=self.check_calculation).pack(side="right",padx=4)
-        more=ttk.Menubutton(bar,text="Ещё ▾",style="Compact.TMenubutton")
+        more=ttk.Menubutton(bar,text="Ещё",style="Compact.TMenubutton")
         more.pack(side="left",padx=6)
         self.node_menu=tk.Menu(more,tearoff=False)
-        self.node_menu.add_command(label="Добавить из справочника деталей",command=self.open_parts_catalog)
+        self.node_menu.bind('<Button-3>', self._dismiss_node_menu)
+        self.node_menu.add_command(label="Создать новую деталь вручную", command=self.edit_node)
         self.node_menu.add_separator()
         for title,command in (("Изменить",lambda:self.edit_node(edit=True)),("Копировать",self.duplicate),
                               ("Переместить",self.reparent),("Выше",lambda:self.reorder(-1)),("Ниже",lambda:self.reorder(1)),("Удалить",self.remove_node)):
@@ -228,14 +279,16 @@ class ProductionTab(ttk.Frame):
         more.configure(menu=self.node_menu)
         label(tab, "Количество задаётся на один родительский узел. Двойной щелчок открывает карточку позиции.",
               foreground="#7c8792").pack(anchor="w", pady=(4, 8))
-        split = ttk.Frame(tab)
-        split.pack(fill="both", expand=True)
+        panes = ttk.Panedwindow(tab, orient='vertical')
+        panes.pack(fill='both', expand=True)
+        split = ttk.Frame(panes)
+        panes.add(split, weight=3)
         from ui_theme import side_card
         self.detail_panel = side_card(split, 300)
         self.node_title = tk.StringVar(value="Выберите позицию")
         self.node_info = tk.StringVar(value="Выберите изделие или деталь в составе заказа.")
-        ttk.Label(self.detail_panel, text="КАРТОЧКА ПОЗИЦИИ", style="Card.TLabel", foreground="#8290a3").pack(anchor="w", pady=(0,12))
-        ttk.Label(self.detail_panel, textvariable=self.node_title, style="Card.TLabel", font=("Segoe UI Semibold",14), wraplength=250).pack(anchor="w")
+        ttk.Label(self.detail_panel, text="КАРТОЧКА ПОЗИЦИИ", style="Card.TLabel", foreground="#64748b").pack(anchor="w", pady=(0,12))
+        ttk.Label(self.detail_panel, textvariable=self.node_title, style="Card.TLabel", font=(ui_font(self),14,'bold'), wraplength=250).pack(anchor="w")
         ttk.Separator(self.detail_panel).pack(fill="x", pady=16)
         ttk.Label(self.detail_panel, textvariable=self.node_info, style="Card.TLabel", wraplength=250, justify="left").pack(anchor="w")
         ttk.Button(self.detail_panel, text="Изменить позицию", style="Accent.TButton", command=lambda:self.edit_node(edit=True)).pack(fill="x", pady=20)
@@ -253,6 +306,19 @@ class ProductionTab(ttk.Frame):
         self.tree.bind("<Button-3>",self._node_context_menu)
         self.tree_summary = tk.StringVar()
         label(tab, "", textvariable=self.tree_summary).pack(anchor="w", pady=8)
+        materials = ttk.Frame(panes, padding=(0, 8, 0, 0))
+        panes.add(materials, weight=1)
+        heading = ttk.Frame(materials)
+        heading.pack(fill='x')
+        ttk.Label(heading, text='Материалы и раскрои', style='Title.TLabel').pack(side='left')
+        self.composition_laser_edit = button(heading, 'Изменить раскрой…', self.edit_composition_laser)
+        label(materials, 'Те же данные, что в лазерной резке. Расход учитывается один раз. Все столбцы — прокрутка вправо.',
+              foreground='#64748b').pack(anchor='w', pady=(4, 8))
+        self.composition_laser_tree = table(materials, LASER_COLUMNS, height=3)
+        self.composition_laser_tree.bind('<Double-1>', lambda e: self.edit_composition_laser())
+        self.composition_laser_tree.bind('<<TreeviewSelect>>', lambda e: self.composition_laser_edit.configure(
+            state='normal' if self.composition_laser_tree.selection() else 'disabled'))
+        self.composition_laser_edit.configure(state='disabled')
 
     def check_calculation(self):
         order=self.calculate(True)
@@ -261,20 +327,35 @@ class ProductionTab(ttk.Frame):
             messagebox.showinfo("Проверка расчёта", "\n".join(warnings) if warnings else "Расчёт обновлён. Замечаний нет.",parent=self)
 
     def open_parts_catalog(self):
-        app=self.winfo_toplevel()
-        app.select_tab(self)
-        app.references_tab.parts_manager.reload()
-        app.show_section('references')
-        app.references_tab.book.select(app.references_tab.parts_manager)
+        if self.flush():
+            from part_picker import PartPicker
+            return PartPicker(self)
+
+    def visible_sections(self):
+        enabled_kinds = {stage["kind"] for stage in self.order["stages"] if stage["enabled"]}
+        visible = {"tree", "stages"}
+        visible.update(key for key, kinds in self.SECTION_KINDS.items() if enabled_kinds & kinds)
+        return visible
 
     def _node_context_menu(self,event):
+        if self.node_menu.winfo_ismapped():
+            return self._dismiss_node_menu()
         item=self.tree.identify_row(event.y)
         if item:
             self.tree.selection_set(item)
-            try:
-                self.node_menu.tk_popup(event.x_root,event.y_root)
-            finally:
-                self.node_menu.grab_release()
+            # Keep Tk's popup grab: it routes outside clicks back to the menu
+            # so the native menu bindings can dismiss it and restore focus.
+            self.node_menu.tk_popup(event.x_root,event.y_root)
+        return 'break'
+
+    def _dismiss_node_menu(self, event=None):
+        self.tk.call('tk::MenuUnpost', str(self.node_menu))
+        return 'break'
+
+    def edit_composition_laser(self):
+        selection = self.composition_laser_tree.selection()
+        if selection:
+            self.edit_laser(True, row_id=selection[0])
 
     def _show_node_details(self):
         node = self.selected_node()
@@ -305,7 +386,7 @@ class ProductionTab(ttk.Frame):
         return {"— Корень заказа —": "", **{f"{n['name']} [{n['id'][:6]}]": n["id"]
                 for n in self.order["nodes"] if n["kind"] == "assembly" and n["id"] not in excluded}}
 
-    def edit_node(self, kind="part", edit=False, root=False):
+    def edit_node(self, kind="part", edit=False, root=False, container=None, on_close=None):
         selected = self.selected_node()
         if root:
             selected = None
@@ -359,8 +440,12 @@ class ProductionTab(ttk.Frame):
             self.tree.selection_set(node["id"])
             self.tree.see(node["id"])
 
-        FormDialog(self, "Карточка изделия" if node["kind"] == "assembly" else "Карточка детали", fields, save,
-                   "Размеры и нормы времени указываются для одной детали. Материал и его цена сохраняются в заказе.")
+        note = "Размеры и нормы — на одну деталь. Материал и цена сохраняются в заказе."
+        if container is not None:
+            panel = FormPanel(container, fields, save, on_close, note)
+            panel.pack(fill='both', expand=True)
+            return panel
+        return FormDialog(self, "Карточка изделия" if node["kind"] == "assembly" else "Карточка детали", fields, save, note)
 
     def duplicate(self):
         node = self.selected_node()
@@ -405,15 +490,139 @@ class ProductionTab(ttk.Frame):
         tab = self.tabs["stages"]
         bar = ttk.Frame(tab, style="Prod.TFrame")
         bar.pack(fill="x")
+        ttk.Label(bar, text='Этапы производства', style='Title.TLabel').pack(side='left', padx=(0, 24))
         button(bar, "Настроить этап", self.edit_stage, True)
         button(bar, "Сохранить нормы по умолчанию", self.save_stage_defaults)
-        label(bar, "Щелчок по флагу — включить. Двойной щелчок — настройка.").pack(side="left", padx=12)
-        self.stages_tree = table(tab, [("n", "N", 38, "center"), ("name", "Имя этапа в дереве спецификации", 290, "w"),
-                                      ("title", "Название этапа", 215, "w"), ("enabled", "Включить", 75, "center"),
-                                      ("otk", "Есть ОТК", 75, "center"), ("description", "Расшифровка", 160, "w")])
+        ttk.Label(tab, text='Примечание — ввод в ячейке. Двойной щелчок по операции — нормы и тарифы.',
+                  style='Muted.TLabel').pack(anchor='w', pady=(8, 12))
+        bottom = ttk.Frame(tab, padding=(0, 10, 0, 0))
+        bottom.pack(side='bottom', fill='x')
+        ttk.Button(bottom, text='+ Вспомогательный', command=self.add_auxiliary_stage).pack(side='left')
+        self.stages_tree = table(tab, [("n", "№", 42, "center"), ("name", "Этап", 180, "w"),
+                                      ("title", "Операция", 180, "w"), ("enabled", "Включён", 100, "center"),
+                                      ("otk", "ОТК", 65, "center"), ("description", "Примечание", 170, "w"),
+                                      ("amount", "Сумма, ₽", 120, "e")])
+        self.stages_tree.configure(style='Stages.Treeview')
+        self.stage_editor = None
+        self.stage_checkboxes = {}
+        # Reposition real controls when rows scroll; only visible cells are mapped.
+        self._flags_pending = None
+        for option in ('yscrollcommand', 'xscrollcommand'):
+            original = self.stages_tree.cget(option)
+            def scroll(first, last, original=original):
+                self.tk.call(original, first, last)
+                self._queue_stage_flags()
+            self.stages_tree.configure(**{option: scroll})
+        self.stages_tree.bind('<Configure>', lambda e: self._queue_stage_flags())
+        self.stages_tree.bind('<<TreeviewSelect>>', lambda e: self._queue_stage_flags())
+        # Column dragging does not resize the Treeview widget itself. Run after
+        # its class binding has changed column widths, also on final release.
+        self.stages_tree.bind('<B1-Motion>', lambda e: self._queue_stage_flags(), add='+')
+        self.stages_tree.bind('<ButtonRelease-1>', lambda e: self._queue_stage_flags(), add='+')
         self.stages_tree.bind("<Button-1>", self.toggle_stage)
         self.stages_tree.bind("<Double-1>", self.stage_double_click)
         self.stages_tree.bind("<space>", lambda e: self.toggle_selected_stage())
+
+    def _queue_stage_flags(self):
+        if self._flags_pending is None:
+            self._flags_pending = self.after_idle(self._place_stage_flags)
+
+    def destroy(self):
+        for pending in (self.pending, getattr(self, '_flags_pending', None)):
+            if pending:
+                self.after_cancel(pending)
+        super().destroy()
+
+    def _place_stage_flags(self):
+        self._flags_pending = None
+        selected = self.stages_tree.selection()
+        for index, stage in enumerate(self.order['stages'], 1):
+            background = '#e8f1fd' if stage['id'] in selected else ('#fafbfd' if index % 2 == 0 else 'white')
+            for field in ('enabled', 'otk'):
+                widget = self.stage_checkboxes[stage['id'], field]
+                box = self.stages_tree.bbox(stage['id'], field)
+                if box and box[0] >= 0 and box[0]+box[2] <= self.stages_tree.winfo_width():
+                    x, y, width, height = box
+                    widget.set(stage[field], background)
+                    widget.place(x=x+(width-36)//2, y=y+(height-36)//2, width=36, height=36)
+                else:
+                    widget.place_forget()
+        if self.stage_editor is not None:
+            box = self.stages_tree.bbox(self.stage_editor.stage_id, self.stage_editor.field)
+            if box:
+                x, y, width, height = box
+                self.stage_editor.place(x=x+1, y=y+3, width=width-2, height=height-6)
+            else:
+                self.finish_stage_cell()
+
+    def add_auxiliary_stage(self):
+        if not self.flush():
+            return
+        stage = new_auxiliary_stage()
+        self.order['stages'].append(stage)
+        self.refresh()
+        self.stages_tree.selection_set(stage['id'])
+        self.stages_tree.see(stage['id'])
+        self.after_idle(lambda: self.edit_stage_cell(stage['id'], 'name'))
+
+    def edit_stage_cell(self, key, field):
+        if self.stage_editor is not None:
+            if (self.stage_editor.stage_id, self.stage_editor.field) == (key, field):
+                return 'break'
+            if not self.finish_stage_cell():
+                return 'break'
+        if not self.flush():
+            return 'break'
+        stage = next(s for s in self.order['stages'] if s['id'] == key)
+        box = self.stages_tree.bbox(key, field)
+        if not box:
+            return 'break'
+        self.stages_tree.selection_set(key)
+        editor = ttk.Entry(self.stages_tree)
+        editor.stage_id, editor.field = key, field
+        value = number(stage['settings']['fixed_cost']) if field == 'amount' else stage[field]
+        editor.insert(0, value)
+        self.stage_editor = editor
+        x, y, width, height = box
+        editor.place(x=x+1, y=y+3, width=width-2, height=height-6)
+        editor.bind('<Return>', lambda e: self.finish_stage_cell())
+        editor.bind('<Escape>', lambda e: self.cancel_stage_cell())
+        editor.bind('<FocusOut>', lambda e: self.finish_stage_cell())
+        editor.focus_set()
+        editor.selection_range(0, 'end')
+        return 'break'
+
+    def _apply_stage_cell(self):
+        editor = self.stage_editor
+        if editor is None:
+            return
+        value = editor.get().strip()
+        stage = next(s for s in self.order['stages'] if s['id'] == editor.stage_id)
+        if editor.field == 'amount':
+            stage['settings']['fixed_cost'] = numeric(value, 'Сумма')
+        else:
+            if editor.field == 'name' and not value:
+                raise ValueError('Укажите имя этапа')
+            stage[editor.field] = value
+        self.stage_editor = None
+        editor.destroy()
+
+    def finish_stage_cell(self):
+        if self.stage_editor is None:
+            return True
+        try:
+            self._apply_stage_cell()
+        except ValueError as error:
+            self.error_var.set(str(error))
+            return False
+        return self.flush()
+
+    def cancel_stage_cell(self):
+        editor, self.stage_editor = self.stage_editor, None
+        if editor is not None:
+            editor.destroy()
+        self.stages_tree.focus_set()
+        return 'break'
 
     def save_stage_defaults(self):
         if self.flush():
@@ -422,7 +631,12 @@ class ProductionTab(ttk.Frame):
             messagebox.showinfo("Нормы по умолчанию", "Текущие флаги, нормы и тарифы будут применяться к новым заказам. Существующие заказы сохраняют свои настройки.", parent=self)
 
     def stage_double_click(self, event):
-        if self.stages_tree.identify_column(event.x) not in ("#4", "#5"):
+        column = self.stages_tree.identify_column(event.x)
+        key = self.stages_tree.identify_row(event.y)
+        stage = next((s for s in self.order['stages'] if s['id'] == key), None)
+        if column == '#6' or (stage and stage['kind'] == 'auxiliary' and column in ('#2', '#7')):
+            return self.toggle_stage(event)
+        if key and column not in ("#4", "#5", '#7'):
             self.edit_stage()
 
     def toggle_selected_stage(self):
@@ -434,6 +648,12 @@ class ProductionTab(ttk.Frame):
     def toggle_stage(self, event):
         key = self.stages_tree.identify_row(event.y)
         column = self.stages_tree.identify_column(event.x)
+        if key:
+            stage = next(s for s in self.order['stages'] if s['id'] == key)
+            if column == '#6':
+                return self.edit_stage_cell(key, 'description')
+            if stage['kind'] == 'auxiliary' and column in ('#2', '#7'):
+                return self.edit_stage_cell(key, 'name' if column == '#2' else 'amount')
         if key and column in ("#4", "#5"):
             self.stages_tree.selection_set(key)
             self._toggle(key, "enabled" if column == "#4" else "otk")
@@ -446,6 +666,9 @@ class ProductionTab(ttk.Frame):
         stage[field] = not stage[field]
         self._load_widgets()
         self.stages_tree.selection_set(key)
+        sync = getattr(self.winfo_toplevel(), "_sync_navigation", None)
+        if sync:
+            sync()
 
     def edit_stage(self, stage=None):
         if not self.flush():
@@ -455,10 +678,14 @@ class ProductionTab(ttk.Frame):
             if not selection:
                 return
             stage = next(s for s in self.order["stages"] if s["id"] == selection[0])
+        else:
+            stage = next(s for s in self.order['stages'] if s['id'] == stage['id'])
         fields = [("name", "Имя этапа в дереве спецификации", stage["name"], "text"),
                   ("enabled", "Включить", stage["enabled"], "bool"), ("otk", "Есть ОТК", stage["otk"], "bool"),
                   ("description", "Расшифровка", stage["description"], "text")]
-        if stage["kind"] != "welding":
+        if stage['kind'] == 'auxiliary':
+            fields += [('fixed_cost', 'Сумма, ₽', stage['settings']['fixed_cost'], 'number')]
+        elif stage["kind"] != "welding":
             fields += [(key, title, stage["settings"][key], "number") for key, title, _ in FIELDS[stage["kind"]] + COMMON_FIELDS]
         def save(values):
             if not values["name"]:
@@ -468,8 +695,15 @@ class ProductionTab(ttk.Frame):
             for key in ("name", "enabled", "otk", "description"):
                 stage[key] = values.pop(key)
             stage["settings"].update(values)
+            if stage['kind'] == 'auxiliary':
+                stage['title'] = 'Вспомогательный'
             self._load_widgets()
+            sync = getattr(self.winfo_toplevel(), "_sync_navigation", None)
+            if sync:
+                sync()
         FormDialog(self, "Настройка этапа: " + stage["name"], fields, save,
+                   "Укажите общую сумму за вспомогательный этап на весь заказ."
+                   if stage['kind'] == 'auxiliary' else
                    "Стоимость = время / 60 × тариф + дополнительная стоимость. ОТК учитывается только при включённом флаге."
                    if stage["kind"] != "welding" else "Сварка пока без параметров и расчёта стоимости.")
 
@@ -483,16 +717,7 @@ class ProductionTab(ttk.Frame):
         window = canvas.create_window(0, 0, anchor="nw", window=frame)
         frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
-        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
-        def wheel(event):
-            widget = event.widget
-            while widget is not None:
-                if widget == frame:
-                    canvas.yview_scroll(int(-event.delta / 120), "units")
-                    return "break"
-                widget = getattr(widget, "master", None)
-        binding = self.winfo_toplevel().bind("<MouseWheel>", wheel, add="+")
-        frame.bind("<Destroy>", lambda e: self.winfo_toplevel().unbind("<MouseWheel>", binding) if e.widget == frame else None)
+        wheel_area(canvas, frame)
         return frame
 
     def _settings_tab(self, kind):
@@ -508,7 +733,7 @@ class ProductionTab(ttk.Frame):
         section.pack(fill="x", anchor="n")
         bar = ttk.Frame(section, style="Prod.TFrame")
         bar.pack(fill="x", pady=(0, 8))
-        caption = label(bar, stage["name"], foreground="#2868aa", font=("Segoe UI Semibold", 12))
+        caption = label(bar, stage["name"], foreground="#2868aa", font=(ui_font(self), 13, 'bold'))
         caption.pack(side="left", padx=(0, 20))
         self.stage_views[stage["id"]] = caption
         flags = {}
@@ -524,7 +749,7 @@ class ProductionTab(ttk.Frame):
         for key, title, default in FIELDS[stage["kind"]] + COMMON_FIELDS:
             if stage["kind"] == "painting" and key in ("prep_per_m2", "transport_pct"):
                 label(form, "Этап подготовки к покраске" if key == "prep_per_m2" else "Этап покраски",
-                      foreground="#2868aa", font=("Segoe UI", 11)).grid(row=row, columnspan=2, sticky="w", pady=(6, 5))
+                      foreground="#2868aa", font=(ui_font(self), 11)).grid(row=row, columnspan=2, sticky="w", pady=(6, 5))
                 row += 1
             var = tk.StringVar(value=stage["settings"].get(key, default))
             settings[key] = var
@@ -553,88 +778,111 @@ class ProductionTab(ttk.Frame):
 
     def _laser_tab(self):
         tab = self.tabs["laser"]
-        bar = ttk.Frame(tab, style="Prod.TFrame")
-        bar.pack(fill="x")
-        label(bar, "Имя каталога:").pack(side="left", padx=(0, 10))
+        guide = label(tab, 'Загрузите раскрои → проверьте материал, цену и время → сохраните заказ.',
+                      wraplength=950, foreground='#64748b')
+        guide.pack(anchor='w', pady=(0, 8))
         self.directory_var = tk.StringVar(value=self.order["laser_directory"])
-        ttk.Entry(bar, textvariable=self.directory_var, width=30, style="Prod.TEntry").pack(side="left")
-        button(bar, "…", self.choose_directory)
-        button(bar, "Импорт файлов…", self.import_files)
         self.area_only_var = tk.BooleanVar(value=self.order["laser_area_only"])
-        ttk.Checkbutton(bar, text="Только площадь и массу", variable=self.area_only_var,
-                        style="Prod.TCheckbutton", command=self._changed).pack(side="left", padx=8)
-        button(bar, "Импорт папки", self.import_directory)
         self.directory_var.trace_add("write", self._changed)
-        label(tab, "Импорт: BIT (XLSX / PDF), TruTops (HTML), Sekirus (PDF). Перед добавлением — просмотр и сопоставление деталей.", foreground="#6b7278").pack(anchor="w", pady=4)
-        params = ttk.Frame(tab, style="Prod.TFrame")
+        self.laser_book = ttk.Notebook(tab, style='Prod.TNotebook')
+        self.laser_book.pack(fill='both', expand=True)
+        upper, lower, settings_page = [ttk.Frame(self.laser_book, padding=10) for _ in range(3)]
+        for page, title in ((upper, 'Раскрои и материалы'), (lower, 'Данные деталей'), (settings_page, 'Нормы и тариф')):
+            self.laser_book.add(page, text=title)
+        settings_page = self._scroll_form(settings_page)
+        lower = self._scroll_form(lower)
+        label(settings_page, 'Эти нормы определяют дополнительное время и стоимость резки всего заказа.',
+              foreground='#64748b').pack(anchor='w', pady=(0, 12))
+        params = ttk.Frame(settings_page, style="Prod.TFrame")
         params.pack(fill="x")
         stage = next(s for s in self.order["stages"] if s["kind"] == "laser")
         settings = {}
         for index, (key, title, default) in enumerate(FIELDS["laser"]):
             row, col = divmod(index, 2)
-            label(params, title + ":").grid(row=row, column=col * 2, sticky="w", padx=(0, 6), pady=3)
+            label(params, title + ":", wraplength=280).grid(row=row, column=col * 2, sticky="w", padx=(0, 6), pady=3)
             var = tk.StringVar(value=stage["settings"][key])
             settings[key] = var
             ttk.Entry(params, textvariable=var, width=8, justify="right", style="Prod.TEntry").grid(row=row, column=col*2+1, padx=(0, 18))
             var.trace_add("write", self._changed)
         self.setting_vars[stage["id"]] = settings
-        button(bar, "Тариф / ОТК", lambda: self.edit_stage(next(s for s in self.order["stages"] if s["kind"] == "laser")))
-        panes = ttk.Panedwindow(tab, orient="vertical")
-        panes.pack(fill="both", expand=True, pady=(4, 0))
-        upper, lower = ttk.Frame(panes, style="Prod.TFrame"), ttk.Frame(panes, style="Prod.TFrame")
-        panes.add(upper, weight=3)
-        panes.add(lower, weight=2)
+        tariff = ttk.Frame(settings_page)
+        tariff.pack(fill='x', pady=12)
+        button(tariff, 'Изменить тариф и ОТК…', lambda: self.edit_stage(next(s for s in self.order['stages'] if s['kind'] == 'laser')))
+        label(settings_page, 'Стоимость работ = время / 60 × тариф часа + дополнительная стоимость этапа.\n'
+              'Материал = расход × коэффициент × цена единицы. Отходы показаны справочно.\n'
+              'Если раскрои загружены, время резки берётся из них, а не повторно из карточек деталей.',
+              foreground='#64748b', wraplength=1000, justify='left').pack(anchor='w', pady=8)
+        self.laser_totals = tk.StringVar()
+        label(settings_page, '', textvariable=self.laser_totals, justify='left').pack(anchor='w', pady=12)
         toolbar = ttk.Frame(upper, style="Prod.TFrame")
         toolbar.pack(fill="x")
-        button(toolbar, "Добавить", self.edit_laser)
-        button(toolbar, "Изменить", lambda: self.edit_laser(True))
-        button(toolbar, "Удалить", lambda: self.remove_row("laser_rows", self.laser_tree))
-        button(toolbar, "↑", lambda: self.reorder_row("laser_rows", self.laser_tree, -1))
-        button(toolbar, "↓", lambda: self.reorder_row("laser_rows", self.laser_tree, 1))
-        button(toolbar, "Источники импорта", self.show_import_sources)
+        button(toolbar, 'Импорт раскроев…', self.import_files, True)
+        button(toolbar, '+ Раскрой вручную', self.edit_laser)
+        self.laser_edit_button = button(toolbar, 'Изменить раскрой…', lambda: self.edit_laser(True))
+        self.laser_edit_button.configure(state='disabled')
+        more = ttk.Menubutton(toolbar, text='Ещё', style='Compact.TMenubutton')
+        more.pack(side='left', padx=5)
+        self.laser_menu = tk.Menu(more, tearoff=False)
+        self.laser_menu.add_command(label='Импортировать всю папку…', command=self.import_directory)
+        self.laser_menu.add_command(label='Источники и замечания импорта…', command=self.show_import_sources)
+        self.laser_menu.add_separator()
+        self.laser_menu.add_command(label='Переместить раскрой выше', command=lambda: self.reorder_row('laser_rows', self.laser_tree, -1))
+        self.laser_menu.add_command(label='Переместить раскрой ниже', command=lambda: self.reorder_row('laser_rows', self.laser_tree, 1))
+        self.laser_menu.add_command(label='Удалить выбранный раскрой…', command=lambda: self.remove_row('laser_rows', self.laser_tree))
+        more.configure(menu=self.laser_menu)
         self.laser_search = tk.StringVar()
-        ttk.Entry(toolbar, textvariable=self.laser_search, width=22).pack(side="right", padx=5)
-        label(toolbar, "Поиск:").pack(side="right")
+        ttk.Entry(toolbar, textvariable=self.laser_search, width=18).pack(side='right', padx=(8, 0))
+        label(toolbar, 'Поиск:').pack(side='right')
+        hint = label(upper, 'Цена — в «Изменить раскрой». Все столбцы — прокрутка вправо.', foreground='#64748b')
+        hint.pack(anchor='w', pady=(4, 6))
+        self.laser_overview = tk.StringVar()
+        label(upper, '', textvariable=self.laser_overview).pack(side='bottom', anchor='w', pady=(8, 0))
         self.laser_search.trace_add("write", lambda *a: self.refresh_laser())
-        self.laser_tree = table(upper, [("n", "N", 35, "center"), ("material", "Материал", 230, "w"),
-            ("characteristic", "Характеристика", 115, "w"), ("thickness", "Толщина", 75, "center"),
-            ("coef", "Коэф.", 60, "e"), ("quantity", "Количество", 80, "e"), ("waste_pct", "% отходов", 80, "e"),
-            ("center", "Вид рабочего центра", 170, "w"), ("cut_minutes", "Резка, мин", 85, "e"),
-            ("sheets", "Листов", 65, "center"), ("change", "Смена, мин", 85, "e"), ("weight", "Вес ед., кг", 85, "e"),
-            ("extra_minutes", "Доп., мин", 85, "e"), ("total", "Всего, мин", 90, "e"),
-            ("blank", "Минимальная заготовка", 165, "w"), ("customer_material", "Сырьё давальца", 110, "center")], height=5)
+        self.laser_tree = table(upper, LASER_COLUMNS, height=7)
+        self.laser_tree.bind('<<TreeviewSelect>>', lambda e: self.laser_edit_button.configure(
+            state='normal' if self.laser_tree.selection() else 'disabled'))
         self.laser_tree.bind("<Double-1>", lambda e: self.edit_laser(True))
         comment = ttk.Frame(lower, style="Prod.TFrame")
         comment.pack(fill="x", pady=5)
         label(comment, "Комментарий технолога:").pack(side="left", padx=(0, 10))
         self.comment_var = tk.StringVar(value=self.order["laser_comment"])
-        ttk.Entry(comment, textvariable=self.comment_var, width=50, style="Prod.TEntry").pack(side="left")
+        ttk.Entry(comment, textvariable=self.comment_var, width=50, style="Prod.TEntry").pack(side="left", fill='x', expand=True)
         self.comment_var.trace_add("write", self._changed)
-        label(lower, "Нераспределённое время по изделиям", foreground="#2868aa", font=("Segoe UI Semibold", 11)).pack(anchor="w")
+        label(lower, 'Данные из файлов → детали заказа', font=(ui_font(self), 12, 'bold')).pack(anchor='w', pady=8)
+        label(lower, 'При обычном импорте данные уже перенесены в детали. Этот раздел нужен для ручного исправления связей.\n'
+              'Выберите строку, укажите деталь заказа, затем нажмите «Обновить карточки деталей». Повторный перенос заменяет значения.',
+              wraplength=1000, foreground='#64748b', justify='left').pack(anchor='w', pady=(0, 8))
         line = ttk.Frame(lower, style="Prod.TFrame")
         line.pack(fill="x")
         self.include_var = tk.BooleanVar(value=self.order["laser_include_filled"])
-        ttk.Checkbutton(line, text="Включая заполненное время резки", variable=self.include_var, style="Prod.TCheckbutton", command=self._changed).pack(side="left")
-        button(line, "Добавить", self.edit_unmatched)
-        button(line, "Изменить", lambda: self.edit_unmatched(True))
-        button(line, "Удалить", lambda: self.remove_row("laser_unmatched", self.unmatched_tree))
-        button(line, "Перенести по сопоставленным изделиям", self.transfer_times)
+        ttk.Checkbutton(line, text='Заменять уже заполненное время в деталях', variable=self.include_var, style='Prod.TCheckbutton', command=self._changed).pack(side='left')
+        ttk.Checkbutton(line, text='Обновлять только площадь и массу', variable=self.area_only_var, style='Prod.TCheckbutton', command=self._changed).pack(side='left', padx=12)
+        actions = ttk.Frame(lower)
+        actions.pack(fill='x', pady=6)
+        button(actions, 'Связать с деталью…', lambda: self.edit_unmatched(True))
+        button(actions, 'Обновить карточки деталей', self.transfer_times, True)
+        more = ttk.Menubutton(actions, text='Ещё', style='Compact.TMenubutton')
+        more.pack(side='left', padx=5)
+        self.mapping_menu = tk.Menu(more, tearoff=False)
+        self.mapping_menu.add_command(label='Добавить строку вручную…', command=self.edit_unmatched)
+        self.mapping_menu.add_command(label='Удалить строку сопоставления…', command=lambda: self.remove_row('laser_unmatched', self.unmatched_tree))
+        more.configure(menu=self.mapping_menu)
         content = ttk.Frame(lower, style="Prod.TFrame")
         content.pack(fill="both", expand=True)
-        totals = ttk.Frame(content, style="Prod.TFrame", padding=(14, 0))
-        totals.pack(side="right", fill="y")
-        self.laser_totals = tk.StringVar()
-        label(totals, "Итоги:", foreground="#6b7278").pack(anchor="w")
-        label(totals, "", textvariable=self.laser_totals, justify="left").pack(anchor="w", pady=5)
         self.unmatched_tree = table(content, [("name", "Наименование в файле", 170, "w"),
             ("quantity", "Количество", 75, "center"), ("minutes", "Время резки", 85, "e"),
-            ("match", "Список для сопоставления", 185, "w"), ("area", "Площадь 1 шт.", 95, "e"), ("mass", "Масса 1 шт.", 90, "e")], height=4)
+            ("match", "Деталь заказа", 185, "w"), ("area", "Площадь 1 шт., м²", 150, "e"), ("mass", "Масса 1 шт., кг", 130, "e")], height=4)
         self.unmatched_tree.bind("<Double-1>", lambda e: self.edit_unmatched(True))
-
-    def choose_directory(self):
-        chosen = filedialog.askdirectory(parent=self, title="Каталог файлов лазерной резки")
-        if chosen:
-            self.directory_var.set(chosen)
+        def fit_layout(event):
+            # On short displays preserve room for rows, not repeated help text.
+            compact = event.height < 360
+            if compact:
+                guide.pack_forget()
+                hint.pack_forget()
+            elif not guide.winfo_manager():
+                guide.pack(anchor='w', pady=(0, 8), before=self.laser_book)
+                hint.pack(anchor='w', pady=(4, 6), after=toolbar)
+        tab.bind('<Configure>', fit_layout, add='+')
 
     def import_files(self):
         paths = filedialog.askopenfilenames(parent=self, title="Выберите один или несколько отчётов раскроя",
@@ -646,9 +894,8 @@ class ProductionTab(ttk.Frame):
 
     def import_directory(self):
         from cam_import import SUPPORTED
-        directory = self.directory_var.get().strip()
-        if not directory or not Path(directory).is_dir():
-            directory = filedialog.askdirectory(parent=self, title="Папка с отчётами раскроя")
+        directory = filedialog.askdirectory(parent=self, title="Папка с отчётами раскроя",
+                                            initialdir=self.directory_var.get() or None)
         if not directory:
             return
         self.directory_var.set(directory)
@@ -732,9 +979,12 @@ class ProductionTab(ttk.Frame):
             box.insert("end", "\n")
         box.configure(state="disabled")
 
-    def edit_laser(self, edit=False):
+    def edit_laser(self, edit=False, row_id=None):
+        if not self.flush():
+            return
         selected = self.laser_tree.selection()
-        old = next((r for r in self.order["laser_rows"] if selected and r["id"] == selected[0]), None)
+        row_id = row_id or (selected[0] if selected else None)
+        old = next((r for r in self.order["laser_rows"] if r['id'] == row_id), None)
         if edit and not old:
             return
         row = deepcopy(old) if edit else dict(id=uid(), material="", characteristic="", thickness=1, coef=1,
@@ -759,6 +1009,10 @@ class ProductionTab(ttk.Frame):
                 raise ValueError("Укажите материал или выберите его в справочнике")
             if values["waste_pct"] > 100:
                 raise ValueError("Процент отходов должен быть от 0 до 100")
+            if edit:
+                for field, flag in (('cut_minutes', 'missing_time'), ('weight', 'missing_mass')):
+                    if values[field] != old[field]:
+                        row[flag] = False
             row.update(values)
             if edit:
                 self.order["laser_rows"][self.order["laser_rows"].index(old)] = row
@@ -868,8 +1122,12 @@ class ProductionTab(ttk.Frame):
         self.pending = self.after(350, self._recalculate)
 
     def _read_widgets(self):
+        self._apply_stage_cell()
         order = deepcopy(self.order)
-        order.update(customer=self.customer_var.get().strip(), name=self.name_var.get().strip(),
+        number_value = self.number_var.get().strip()
+        if not number_value:
+            raise ValueError("Укажите номер заказа")
+        order.update(number=number_value, customer=self.customer_var.get().strip(), name=self.name_var.get().strip(),
                      laser_directory=self.directory_var.get(), laser_comment=self.comment_var.get(),
                      laser_area_only=self.area_only_var.get(), laser_include_filled=self.include_var.get())
         for stage in order["stages"]:
@@ -930,20 +1188,30 @@ class ProductionTab(ttk.Frame):
         for key,value in (("material",financial["Материалы"]["cost"]),("work",financial["Работы"]["cost"]),("sale",financial["Всего"]["sale"])):
             self.overview_vars[key].set(money(value))
         self._show_node_details()
-        self.total_var.set(f"Деталей: {number(c['quantity'])}   ·   Время: {number(c['minutes'])} мин   ·   Итого: {money(self.order['totals']['grand'])}")
+        self.total_var.set(f"Деталей: {number(c['quantity'])}   ·   Время: {number(c['minutes'])} мин")
         warnings = c["warnings"]
         self.error_var.set((warnings[0] + (f"; ещё замечаний: {len(warnings)-1}" if len(warnings) > 1 else "")) if warnings else "")
         self.tree_summary.set(f"Площадь покраски: {number(c['paint_area'])} м²   ·   Масса: {number(c['mass'])} кг   ·   Гибов: {number(c['bends'])}   ·   Материал: {c['material_basis']}")
         selected = self.stages_tree.selection()
         position = self.stages_tree.yview()[0]
         self.stages_tree.delete(*self.stages_tree.get_children())
+        current_ids = {s['id'] for s in self.order['stages']}
+        for key, widget in list(self.stage_checkboxes.items()):
+            if key[0] not in current_ids:
+                widget.destroy()
+                del self.stage_checkboxes[key]
         for index, stage in enumerate(self.order["stages"], 1):
+            for field in ('enabled', 'otk'):
+                if (stage['id'], field) not in self.stage_checkboxes:
+                    self.stage_checkboxes[stage['id'], field] = FlagButton(
+                        self.stages_tree, lambda key=stage['id'], field=field: self._toggle(key, field))
             self.stages_tree.insert("", "end", iid=stage["id"], values=(index, stage["name"], stage["title"],
-                "☑" if stage["enabled"] else "☐", "☑" if stage["otk"] else "☐", stage["description"]),
+                "", "", stage["description"], number(stage['settings']['fixed_cost']) if stage['kind'] == 'auxiliary' else '—'),
                 tags=("alternate",) if index % 2 == 0 else ())
         if selected:
-            self.stages_tree.selection_set(selected)
+            self.stages_tree.selection_set([key for key in selected if self.stages_tree.exists(key)])
         self.stages_tree.yview_moveto(position)
+        self._queue_stage_flags()
         for result in c["stages"]:
             if result["kind"] == "painting":
                 self.paint_prep_var.set(number(result["details"]["Общее время на этап подготовки, мин"]))
@@ -956,6 +1224,9 @@ class ProductionTab(ttk.Frame):
             ("cutting", "Время загруженное, мин"), ("sheets", "Количество листов"), ("change", "Смена листа, мин"),
             ("weight", "Вес металла, кг"), ("transport", "Доп. время, мин"), ("heads", "Смена головы, мин"), ("total", "Общее время, мин"))))
         self.status("Черновик спецификации сохранён")
+        app = self.winfo_toplevel()
+        if getattr(app, 'order_tab', None) is self:
+            app._sync_navigation()
 
     def _render_tree(self):
         selected = self.tree.selection()
@@ -980,29 +1251,42 @@ class ProductionTab(ttk.Frame):
     def refresh_laser(self):
         if not hasattr(self, "laser_tree"):
             return
-        selected = self.laser_tree.selection()
-        position = self.laser_tree.yview()[0]
-        self.laser_tree.delete(*self.laser_tree.get_children())
         laser_stage = next(s for s in self.order["stages"] if s["kind"] == "laser")
         settings = laser_stage["settings"]
+        rendered = []
         for index, row in enumerate(self.order["laser_rows"], 1):
-            if self.laser_search.get().casefold() not in (row["material"] + " " + row["center"]).casefold():
-                continue
             change = row["sheets"] * settings["sheet_change"]
             total = row["cut_minutes"] * (1 + settings["transport_pct"] / 100) + change + row["extra_minutes"]
             values = (index, row["material"], row["characteristic"], number(row["thickness"]), number(row["coef"]),
-                      number(row["quantity"]), number(row["waste_pct"]), row["center"], number(row["cut_minutes"]),
-                      number(row["sheets"]), number(change), number(row["weight"]), number(row["extra_minutes"]),
-                      number(total), row["blank"], "☑" if row["customer_material"] else "☐")
-            self.laser_tree.insert("", "end", iid=row["id"], values=values, tags=("alternate",) if index % 2 == 0 else ())
-        if selected and self.laser_tree.exists(selected[0]):
-            self.laser_tree.selection_set(selected)
-        self.laser_tree.yview_moveto(position)
+                      number(row["quantity"]), number(row["waste_pct"]), row["center"],
+                      '—' if row.get('missing_time') else number(row["cut_minutes"]),
+                      number(row["sheets"]), number(change), '—' if row.get('missing_mass') else number(row["weight"]),
+                      number(row["extra_minutes"]), '—' if row.get('missing_time') else number(total),
+                      row["blank"], 'Да' if row["customer_material"] else 'Нет')
+            rendered.append((row, values, ("alternate",) if index % 2 == 0 else ()))
+        for widget in (self.laser_tree, self.composition_laser_tree):
+            selected, position = widget.selection(), widget.yview()[0]
+            widget.delete(*widget.get_children())
+            for row, values, tags in rendered:
+                if widget is self.laser_tree and self.laser_search.get().casefold() not in (row['material']+' '+row['center']).casefold():
+                    continue
+                widget.insert('', 'end', iid=row['id'], values=values, tags=tags)
+            widget.selection_set([key for key in selected if widget.exists(key)])
+            widget.yview_moveto(position)
+        laser = self.order.get('calculation', {}).get('laser', {})
+        self.laser_overview.set((
+            f"Раскроев: {len(rendered)} · Время этапа: {number(laser.get('total', 0))} мин · "
+            f"Материал по раскроям: {money(laser.get('material', 0))}" if rendered else
+            'Раскроев пока нет. Импортируйте отчёты или добавьте строку вручную.') +
+            (' · Время неполное: есть неизвестные значения.' if any(r.get('missing_time') for r in self.order['laser_rows']) else ''))
+        selected, position = self.unmatched_tree.selection(), self.unmatched_tree.yview()[0]
         self.unmatched_tree.delete(*self.unmatched_tree.get_children())
         nodes = {n["id"]: n["name"] for n in self.order["nodes"]}
         for row in self.order["laser_unmatched"]:
             self.unmatched_tree.insert("", "end", iid=row["id"], values=(row["name"], row["quantity"], "—" if row.get("missing_time") else number(row["minutes"]),
                 nodes.get(row["node_id"], "—"), "—" if row.get("missing_area") else number(row["area"]), "—" if row.get("missing_mass") else number(row["mass"])))
+        self.unmatched_tree.selection_set([key for key in selected if self.unmatched_tree.exists(key)])
+        self.unmatched_tree.yview_moveto(position)
 
     def _render_extras(self):
         self.extras_tree.delete(*self.extras_tree.get_children())
@@ -1023,13 +1307,16 @@ class ProductionTab(ttk.Frame):
         if not order["calculation"]["parts"]:
             messagebox.showinfo("Заказ", "Добавьте хотя бы одну деталь в дерево спецификации.", parent=self)
             return
+        duplicate = next((row for row in self.db.list_orders()
+                          if row["number"] == order["number"] and row["id"] != self.saved_id), None)
+        if duplicate:
+            messagebox.showwarning("Номер заказа",
+                                   f"Заказ с номером «{order['number']}» уже существует. Укажите другой номер.",
+                                   parent=self)
+            return
         if self.saved_id:
             self.db.update_order(self.saved_id, order)
         else:
-            # A simple cutting order may have used the initial number meanwhile.
-            if any(r["number"] == order["number"] for r in self.db.list_orders()):
-                allocator = getattr(self.winfo_toplevel(), "allocate_number", self.db.next_order_number)
-                order["number"] = allocator()
             self.saved_id = self.db.save_order(order)
             self.order["number"] = order["number"]
             self.number_var.set(order["number"])
@@ -1043,16 +1330,19 @@ class ProductionTab(ttk.Frame):
             self.preview(self, order, kind)
 
     def load_order(self, order, order_id):
-        self.order = deepcopy(order)
+        self.cancel_stage_cell()
+        self.order = prepare_order_stages(order)
         self.saved_id = order_id
         self._load_widgets()
 
     def reset(self):
         if not messagebox.askyesno("Новый заказ", "Создать новый заказ? Текущий черновик будет заменён. Записанные заказы останутся в истории.", parent=self):
             return
+        self.cancel_stage_cell()
         self.order = new_order(self.db.next_order_number())
         if self.db.get_state("production_stage_defaults"):
             self.order["stages"] = self.db.get_state("production_stage_defaults")
+        self.order = prepare_order_stages(self.order)
         self.saved_id = None
         self._load_widgets()
 

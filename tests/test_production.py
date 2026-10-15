@@ -4,7 +4,8 @@ from pathlib import Path
 
 from database import Database
 from production import (new_order, new_node, default_stages, flatten_nodes, move_node,
-                        copy_branch, calculate_production, numeric, transfer_laser_matches)
+                        copy_branch, calculate_production, numeric, transfer_laser_matches,
+                        new_auxiliary_stage, prepare_order_stages)
 from reports import document_html
 
 
@@ -23,12 +24,46 @@ def fixture():
 
 
 class ProductionTests(unittest.TestCase):
-    def test_all_34_stages_in_reference_order(self):
+    def test_reduced_stages_keep_original_ids_and_laser(self):
         stages = default_stages()
-        self.assertEqual(len(stages), 34)
-        self.assertEqual([stages[i]["name"] for i in (0, 3, 6, 9, 12, 15, 18, 21, 24, 25, 33)],
-                         ["Напилка", "Резка", "Сварка", "Гибка", "Сборка1", "Сварка1", "Сборка2", "Покрытие", "Сборка", "Упаковка", "Вспомогательный_8"])
+        self.assertEqual([s['id'] for s in stages],
+                         [f'stage_{n}' for n in (1, 2, 4, 10, 16, 19, 22, 25, 26)])
+        self.assertEqual(stages[2]['kind'], 'laser')
         self.assertEqual(stages[1]["description"], "Закупка")
+
+    def test_removed_stages_archived_without_changing_original_order(self):
+        order = fixture()
+        old = new_auxiliary_stage()
+        old.update(id='stage_27', name='Старая операция')
+        old['settings']['fixed_cost'] = 550
+        order['stages'].append(old)
+        updated = prepare_order_stages(order)
+        self.assertEqual(len(order['stages']), 10)
+        self.assertEqual(len(updated['stages']), 9)
+        self.assertEqual(updated['removed_stages'], [old])
+        self.assertEqual(prepare_order_stages(updated), updated)
+        self.assertEqual(calculate_production(order)['totals']['grand'] -
+                         calculate_production(updated)['totals']['grand'], 550)
+
+    def test_custom_auxiliary_cost_is_added_once_and_survives_reload(self):
+        order = fixture()
+        base = calculate_production(order)['totals']['grand']
+        stage = new_auxiliary_stage()
+        stage['name'] = 'Доработка'
+        stage['settings']['fixed_cost'] = 1234.5
+        order['stages'].append(stage)
+        result = calculate_production(prepare_order_stages(order))
+        self.assertEqual(result['totals']['grand'], base + 1234.5)
+        self.assertEqual(stage['title'], 'Вспомогательный')
+        self.assertNotEqual(stage['id'], new_auxiliary_stage()['id'])
+        self.assertIn('Доработка', document_html(result, 'report'))
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / 'orders.db')
+            key = db.save_order(result)
+            restored = prepare_order_stages(db.get_order(key))
+            self.assertEqual(restored['stages'][-1], stage)
+            self.assertEqual(calculate_production(restored)['totals']['grand'], base + 1234.5)
+            db.close()
 
     def test_nested_quantities_and_material(self):
         result = calculate_production(fixture())

@@ -4,7 +4,7 @@ from pathlib import Path
 import tkinter as tk
 import sqlite3
 from tkinter import ttk, messagebox
-from ui_theme import AutoScrollbar
+from ui_theme import AutoScrollbar, ui_font
 
 from cam_import import aggregate_parts, apply_import, default_mapping
 from production import numeric, calculate_production
@@ -51,15 +51,11 @@ class ImportPreview(tk.Toplevel):
     def _build(self):
         top = ttk.Frame(self, style="Prod.TFrame", padding=10)
         top.pack(fill="x")
-        label(top, "Проверьте раскрои и сопоставление деталей перед добавлением в заказ.", font=("Segoe UI Semibold", 12)).pack(anchor="w")
-        label(top, "«—» означает отсутствие значения. Цены в файлах не указаны. Двойной щелчок по раскрою — материал, цена и недостающие данные.",
-              foreground="#7c8792").pack(anchor="w", pady=5)
-        options = ttk.Frame(top, style="Prod.TFrame")
-        options.pack(fill="x")
-        for title, variable in (("Заменить выбранные ранее загруженные раскрои", self.replace_var),
-                                ("Только площадь и массу", self.area_only_var),
-                                ("Обновить количество существующих деталей", self.quantity_var)):
-            ttk.Checkbutton(options, text=title, variable=variable, style="Prod.TCheckbutton", command=self.render).pack(side="left", padx=(0, 14))
+        label(top, 'Импорт раскроев', font=(ui_font(self), 15, 'bold')).pack(anchor='w')
+        label(top, '1. Выберите раскрои и укажите цены.  2. Проверьте, какие детали попадут в заказ.  3. Просмотрите замечания.',
+              wraplength=1100, foreground='#64748b').pack(anchor='w', pady=5)
+        label(top, 'До нажатия «Добавить выбранное в заказ» ничего не изменится. Одинаковые PDF и XLSX не добавляются дважды.',
+              wraplength=1100, foreground='#64748b').pack(anchor='w')
         self.summary_var = tk.StringVar()
         footer = ttk.Frame(self, style="Prod.TFrame", padding=10)
         footer.pack(side="bottom", fill="x")
@@ -68,17 +64,38 @@ class ImportPreview(tk.Toplevel):
         button(footer, "Отмена", self.destroy)
         book = ttk.Notebook(self, style="Prod.TNotebook")
         book.pack(fill="both", expand=True, padx=10, pady=5)
-        docs_tab, parts_tab, info_tab = [ttk.Frame(book, style="Prod.TFrame", padding=8) for _ in range(3)]
-        book.add(docs_tab, text="Раскрои и материалы")
-        book.add(parts_tab, text="Детали и сопоставление")
-        book.add(info_tab, text="Замечания и источники")
+        self.book = book
+        docs_tab, parts_tab, info_tab, options = [ttk.Frame(book, style='Prod.TFrame', padding=8) for _ in range(4)]
+        book.add(docs_tab, text='1. Раскрои и цены')
+        book.add(parts_tab, text='2. Детали заказа')
+        book.add(info_tab, text='3. Замечания')
+        book.add(options, text='Параметры обновления')
+        options = self.owner._scroll_form(options)
+        label(options, 'Для первого импорта обычно менять ничего не нужно.',
+              font=(ui_font(self), 12, 'bold')).pack(anchor='w', pady=(4, 12))
+        for title, variable, note in (
+            ('Заменить выбранные ранее загруженные раскрои', self.replace_var,
+             'Для повторной загрузки исправленного файла. Отметьте нужный раскрой на первой вкладке; без этого флага повторы пропускаются.'),
+            ('Только площадь и массу', self.area_only_var,
+             'Только обновить связанные детали. Новые раскрои и детали не создаются, время и количество не меняются.'),
+            ('Обновить количество существующих деталей', self.quantity_var,
+             'Разрешить заменить вручную заданное количество в уже существующих деталях заказа.'),
+            ('Обновлять известные размеры и толщину существующих деталей', self.geometry_var,
+             'Перенести размеры из файла. Отсутствующие значения не затирают заполненные поля.'),
+            ('Переносить массу BIT, несмотря на расхождение итогов', self.mass_var,
+             'В образцах BIT массы деталей расходятся с итогом файла. Включайте только после проверки исходных данных.'),
+        ):
+            ttk.Checkbutton(options, text=title, variable=variable, style='Prod.TCheckbutton', command=self.render).pack(anchor='w', pady=(10, 2))
+            label(options, note, wraplength=960, foreground='#64748b').pack(anchor='w', padx=28)
+        label(docs_tab, 'Цен в файлах нет: откройте «Материал и цена…». «—» означает неизвестное значение, а не ноль.',
+              foreground='#64748b', wraplength=1050).pack(anchor='w', pady=(0, 8))
         toolbar = ttk.Frame(docs_tab, style="Prod.TFrame")
         toolbar.pack(fill="x")
         button(toolbar, "Выбрать все новые", self.select_new)
         button(toolbar, "Снять выбор", self.deselect_all)
-        button(toolbar, "Настроить выбранный раскрой", self.edit_document)
-        self.docs_tree = table(docs_tab, [("include", "Добавить", 65, "center"), ("file", "Файл / программа", 210, "w"),
-            ("material", "Материал", 135, "w"), ("thickness", "Толщина", 65, "center"), ("count", "Листов / труб", 90, "center"),
+        button(toolbar, 'Материал и цена…', self.edit_document, True)
+        self.docs_tree = table(docs_tab, [("include", "Добавить", 80, "center"), ("file", "Файл / программа", 210, "w"),
+            ("material", "Материал", 135, "w"), ("thickness", "Толщина, мм", 115, "center"), ("count", "Листов / труб", 120, "center"),
             ("parts", "Деталей", 70, "center"), ("minutes", "Резка, мин", 90, "e"), ("price", "Цена ед.", 100, "e"),
             ("status", "Статус", 150, "w")])
         self.docs_tree.bind("<Button-1>", self.toggle)
@@ -91,16 +108,13 @@ class ImportPreview(tk.Toplevel):
         ttk.Entry(target, textvariable=self.group_var, width=30).grid(row=0, column=3, sticky="w")
         label(target, "Площадь покраски:").grid(row=1, column=0, sticky="w", pady=5)
         ttk.Combobox(target, textvariable=self.sides_var, values=["Две стороны", "Одна сторона"], state="readonly", width=20).grid(row=1, column=1, sticky="w")
-        ttk.Checkbutton(target, text="Переносить массу BIT, несмотря на расхождение итогов", variable=self.mass_var,
-                        style="Prod.TCheckbutton").grid(row=1, column=2, columnspan=2, sticky="w", padx=14)
-        ttk.Checkbutton(target, text="Обновлять известные размеры и толщину существующих деталей", variable=self.geometry_var,
-                        style="Prod.TCheckbutton").grid(row=2, columnspan=4, sticky="w", pady=(0, 6))
-        label(parts_tab, "По умолчанию противоречивые массы BIT не переносятся. Исходные массы остаются в просмотре и журнале импорта.",
-              foreground="#9a6418").pack(anchor="w", pady=(0, 6))
+        label(parts_tab, '«Создать деталь» — появится новая позиция в составе заказа. Имя существующей детали — обновится её карточка.\n'
+              'Автоподбор уже выполнен. Если связь неверна, выберите строку и нажмите «Куда добавить деталь…».',
+              wraplength=1050, foreground='#64748b', justify='left').pack(anchor='w', pady=(4, 8))
         toolbar = ttk.Frame(parts_tab, style="Prod.TFrame")
         toolbar.pack(fill="x")
-        button(toolbar, "Сопоставить / выбрать действие", self.edit_mapping)
-        button(toolbar, "Автосопоставить по обозначению", self.auto_match)
+        button(toolbar, 'Куда добавить деталь…', self.edit_mapping)
+        button(toolbar, 'Повторить автоподбор', self.auto_match)
         self.parts_tree = table(parts_tab, [("name", "Деталь / обозначение", 240, "w"), ("q", "Всего, шт.", 75, "center"),
             ("size", "Размеры, мм", 130, "center"), ("area", "Плоская площадь, м²/шт.", 155, "e"),
             ("mass", "Масса из файла, кг/шт.", 145, "e"), ("minutes", "Резка, мин/шт.", 110, "e"),
@@ -151,8 +165,13 @@ class ImportPreview(tk.Toplevel):
             self.parts_tree.insert("", "end", iid=key, values=(part["name"], part["quantity"], size, shown(part["flat_area"]),
                                                               shown(part["mass"]), shown(part["minutes"]), mapping))
         docs = self.selected_documents()
+        unpriced = sum(not self.configs[d['key']]['price'] for d in docs)
         self.summary_var.set(f"Выбрано раскроев: {len(docs)}; позиций деталей: {len(self.parts)}; деталей всего: {sum(p['quantity'] for p in self.parts.values())}. "
-                             f"Исключено дубликатов: {len(self.batch['duplicates'])}; ошибок файлов: {len(self.batch['errors'])}.")
+                             f"Повторов файлов: {len(self.batch['duplicates'])}; ошибок чтения: {len(self.batch['errors'])}.\n" +
+                             ('Режим: только площадь и масса — раскрои не добавятся.' if self.area_only_var.get() else
+                              f'Без цены: {unpriced}. Их материал будет учтён по нулевой стоимости.' if unpriced else
+                              'Цены выбранных раскроев заполнены.' if docs else 'Отметьте раскрои в первом столбце.') +
+                             (' Ранее загруженные выбранные раскрои будут заменены.' if self.replace_var.get() else ''))
 
     def toggle(self, event):
         key = self.docs_tree.identify_row(event.y)
@@ -216,6 +235,9 @@ class ImportPreview(tk.Toplevel):
                    "При сопоставлении обновляются известные площадь, масса и время. Количество существующей детали меняется только при включённом флаге.")
 
     def auto_match(self):
+        if not messagebox.askyesno('Повторить автоподбор',
+                                  'Заново подобрать связи для всех деталей в списке? Ручной выбор связей будет заменён.', parent=self):
+            return
         for key, part in self.parts.items():
             self.mappings[key] = default_mapping(self.owner.order, part)
         self.render()
@@ -236,7 +258,7 @@ class ImportPreview(tk.Toplevel):
                 update_geometry=self.geometry_var.get())
             calculated = calculate_production(order)
             # One atomic database write before replacing the visible order.
-            self.owner.db.set_state("production_draft", {"order": calculated, "saved_id": self.owner.saved_id})
+            self.owner.db.set_state(self.owner.draft_key, {"order": calculated, "saved_id": self.owner.saved_id})
             self.owner.order = calculated
             self.owner._load_widgets()
         except (ValueError, KeyError, OSError, sqlite3.Error) as error:

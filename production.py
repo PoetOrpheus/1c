@@ -55,33 +55,41 @@ FIELDS = {
 }
 
 
+REMOVED_STAGE_IDS = {f'stage_{n}' for n in
+                     (3, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 17, 18, 20, 21, 23, 24, *range(27, 35))}
+
+
 def default_stages():
-    main = [("Напилка", "-- Сборка /напилка/", "filing", True),
-            ("Резка", "-- Лазер", "laser", True),
-            ("Сварка", "-- Сварка /…/", "welding", False),
-            ("Гибка", "-- Гибка", "bending", True),
-            ("Сборка1", "-- Сборка /…/", "assembly", False),
-            ("Сварка1", "-- Сварка /…/", "welding", True),
-            ("Сборка2", "-- Сборка /…/", "assembly", True),
-            ("Покрытие", "-- Покраска", "painting", True)]
-    stages = []
+    # IDs stay tied to the original list, independently of visible row numbers.
+    specs = [(1, 'Напилка', '-- Сборка /напилка/', 'filing'),
+             (2, 'Кооперация_1', 'Кооперация', 'cooperation'),
+             (4, 'Резка', '-- Лазер', 'laser'),
+             (10, 'Гибка', '-- Гибка', 'bending'),
+             (16, 'Сварка1', '-- Сварка /…/', 'welding'),
+             (19, 'Сборка2', '-- Сборка /…/', 'assembly'),
+             (22, 'Покрытие', '-- Покраска', 'painting'),
+             (25, 'Сборка', '-- Сборка (окончательная)', 'assembly'),
+             (26, 'Упаковка', '-- Упаковка', 'packing')]
+    return [dict(id=f'stage_{n}', name=name, title=title, kind=kind, enabled=True, otk=False,
+                 description='Закупка' if n == 2 else '',
+                 settings={k: v for k, _, v in FIELDS[kind] + COMMON_FIELDS})
+            for n, name, title, kind in specs]
 
-    def add(name, title, kind, enabled=False, description=""):
-        stages.append(dict(id=f"stage_{len(stages)+1}", name=name, title=title, kind=kind,
-                           enabled=enabled, otk=False, description=description,
-                           settings={k: v for k, _, v in FIELDS[kind] + COMMON_FIELDS}))
 
-    for index, (name, title, kind, enabled) in enumerate(main, 1):
-        add(name, title, kind, enabled)
-        add(f"Кооперация_{index}", "Кооперация", "cooperation", index == 1,
-            "Закупка" if index == 1 else "")
-        add(f"Дополнительный_{index}", "Дополнительный", "additional")
-    add("Сборка", "-- Сборка (окончательная)", "assembly", True)
-    add("Упаковка", "-- Упаковка", "packing", True)
-    for index in range(1, 9):
-        add(f"Вспомогательный_{index}", "Вспомогательный", "auxiliary", index <= 3,
-            {1: "Изготовление", 2: "Гальваник1", 3: "Мехобработка"}.get(index, ""))
-    return stages
+def new_auxiliary_stage():
+    return dict(id='aux_'+uid(), name='Вспомогательный', title='Вспомогательный', kind='auxiliary',
+                enabled=True, otk=False, description='',
+                settings={k: v for k, _, v in FIELDS['auxiliary'] + COMMON_FIELDS})
+
+
+def prepare_order_stages(order):
+    """Apply the reduced list to an editor copy, retaining removed settings for recovery."""
+    order = deepcopy(order)
+    removed = [s for s in order['stages'] if s['id'] in REMOVED_STAGE_IDS]
+    if removed:
+        order.setdefault('removed_stages', []).extend(removed)
+        order['stages'] = [s for s in order['stages'] if s['id'] not in REMOVED_STAGE_IDS]
+    return order
 
 
 def new_order(number):
