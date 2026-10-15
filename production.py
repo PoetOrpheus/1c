@@ -218,6 +218,9 @@ def calculate_production(source):
         node["total_mass"] = node["mass"] * q
         node["total_bends"] = node["bends"] * q
         material = node.get("material") or {}
+        warnings.extend(f"{node['name']}: {w}" for w in node.get("catalog_warnings", []))
+        if node.get("catalog_id") and material and not material.get("price_sheet"):
+            warnings.append(f"{node['name']}: цена материала равна нулю — проверьте карточку детали")
         sheet_area = float(material.get("width", 0)) * float(material.get("height", 0)) / 1_000_000
         node["material_cost"] = round(flat_area * q * (1 + node["waste_pct"] / 100) / sheet_area
                                       * float(material.get("price_sheet", 0)), 2) if sheet_area else 0

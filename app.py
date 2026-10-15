@@ -15,6 +15,7 @@ from calculations import calculate_layout, calculate_totals
 from database import Database
 from reports import document_html, money, number
 from production_ui import ProductionTab
+from ui_theme import AutoScrollbar, wheel_area
 
 
 APP_DIR = (
@@ -30,11 +31,11 @@ COLORS = {
     "yellow_dark": "#d7ad00",
     "sidebar": "#3f454a",
     "sidebar_hover": "#52595f",
-    "background": "#f1f2f3",
+    "background": "#f5f7fa",
     "card": "#ffffff",
-    "border": "#c8cdd2",
-    "text": "#25282a",
-    "muted": "#6b7278",
+    "border": "#e1e7ef",
+    "text": "#263344",
+    "muted": "#8290a3",
     "blue": "#2d70b3",
     "green": "#277a43",
     "red": "#a63b32",
@@ -79,12 +80,12 @@ class DocumentPreview(tk.Toplevel):
 
         body = tk.Frame(self, bg="#dfe2e5", padx=12, pady=12)
         body.pack(fill="both", expand=True)
-        horizontal = ttk.Scrollbar(body, orient="horizontal")
+        horizontal = AutoScrollbar(body, orient="horizontal")
         horizontal.pack(side="bottom", fill="x")
         self.canvas = tk.Canvas(body, bg="#dfe2e5", highlightthickness=0)
         horizontal.configure(command=self.canvas.xview)
         self.canvas.configure(xscrollcommand=horizontal.set)
-        scroll = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        scroll = AutoScrollbar(body, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=scroll.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
@@ -616,6 +617,8 @@ class ReferenceManager(ttk.Frame):
         self.on_change = on_change
         self.records: dict[int, dict] = {}
 
+        self.search_var = tk.StringVar()
+
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(0, 10))
         ttk.Button(toolbar, text="＋ Добавить", style="Accent.TButton", command=self.add).pack(
@@ -629,8 +632,40 @@ class ReferenceManager(ttk.Frame):
             style="Muted.TLabel",
         ).pack(side="right")
 
+        searchbar = ttk.Frame(self, padding=(0,0,0,12))
+        searchbar.pack(fill="x")
+        ttk.Label(searchbar, text="Поиск", style="Muted.TLabel").pack(side="left", padx=(0,10))
+        ttk.Entry(searchbar, textvariable=self.search_var, width=44).pack(side="left")
+        ttk.Button(searchbar, text="Сбросить", command=lambda:self.search_var.set("")).pack(side="left", padx=8)
+        self.record_count = tk.StringVar()
+        ttk.Label(searchbar, textvariable=self.record_count, style="Muted.TLabel").pack(side="right")
+        content = ttk.Frame(self)
+        content.pack(fill="both", expand=True)
+        from ui_theme import side_card
+        panel = side_card(content, 320)
+        self.record_title = tk.StringVar(value="Выберите позицию")
+        ttk.Label(panel, text="КАРТОЧКА СПРАВОЧНИКА", style="Card.TLabel", foreground="#8290a3").pack(anchor="w", pady=(0,10))
+        ttk.Label(panel, textvariable=self.record_title, style="Card.TLabel", wraplength=270, font=("Segoe UI Semibold",13)).pack(anchor="w", pady=(0,12))
+        self.inline_vars = {}
+        for key, title, kind in self.spec["fields"]:
+            ttk.Label(panel, text=title, style="Card.TLabel", foreground="#8290a3").pack(anchor="w", pady=(7,3))
+            var = tk.BooleanVar() if kind == "bool" else tk.StringVar()
+            self.inline_vars[key] = var
+            if kind == "bool":
+                ttk.Checkbutton(panel, text="Используется в заказах", variable=var).pack(anchor="w")
+            else:
+                ttk.Entry(panel, textvariable=var).pack(fill="x")
+        self.inline_error = tk.StringVar()
+        ttk.Label(panel, textvariable=self.inline_error, style="Card.TLabel", foreground="#b7493a", wraplength=265).pack(fill="x", pady=8)
+        ttk.Button(panel, text="Сохранить изменения", style="Accent.TButton", command=self.save_inline).pack(fill="x", pady=(5,0))
+        ttk.Button(panel, text="Отменить изменения", command=self.show_inline).pack(fill="x", pady=7)
+        list_host = ttk.Frame(content, style="Card.TFrame", padding=1)
+        list_host.pack(side="left", fill="both", expand=True)
+        list_host.rowconfigure(0, weight=1)
+        list_host.columnconfigure(0, weight=1)
+
         columns = [column[0] for column in self.spec["columns"]]
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(list_host, columns=columns, show="headings", selectmode="browse")
         for key, title, width in self.spec["columns"]:
             if key in {"price", "price_sheet", "price_per_cut", "setup_fee"}:
                 anchor = "e"
@@ -640,17 +675,58 @@ class ReferenceManager(ttk.Frame):
                 anchor = "center"
             self.tree.heading(key, text=title, anchor=anchor)
             self.tree.column(key, width=width, minwidth=70, anchor=anchor)
-        scroll = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        scroll = AutoScrollbar(list_host, orient="vertical", command=self.tree.yview)
+        horizontal = AutoScrollbar(list_host, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
         self.tree.bind("<Double-1>", lambda _event: self.edit())
+        self.tree.bind("<<TreeviewSelect>>", lambda e:self.show_inline())
+        self.search_var.trace_add("write", lambda *args:self.reload())
         self.reload()
 
+    def show_inline(self):
+        record = self.selected()
+        self.record_title.set(record["name"] if record else "Выберите позицию")
+        self.inline_error.set("")
+        for key, title, kind in self.spec["fields"]:
+            value = record.get(key, "") if record else (False if kind == "bool" else "")
+            self.inline_vars[key].set(bool(value) if kind == "bool" else str(value))
+
+    def save_inline(self):
+        record = self.selected()
+        if not record:
+            self.inline_error.set("Сначала выберите строку в таблице")
+            return
+        from production import numeric
+        try:
+            values = {}
+            for key,title,kind in self.spec["fields"]:
+                value = self.inline_vars[key].get()
+                if kind == "number":
+                    value = numeric(value, title)
+                elif kind == "bool":
+                    value = int(value)
+                else:
+                    value = value.strip()
+                    if not value:
+                        raise ValueError("Заполните поле «" + title + "»")
+                values[key] = value
+            self.db.update_record(self.table, int(record["id"]), values)
+            self.reload()
+            self.on_change()
+        except (ValueError, sqlite3.Error) as error:
+            self.inline_error.set(str(error))
+
     def reload(self) -> None:
+        selected = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
         self.records.clear()
         for record in self.db.list_records(self.table):
+            query = self.search_var.get().strip().casefold()
+            if query and query not in (str(record["id"]) + " " + record["name"]).casefold():
+                continue
             record_id = int(record["id"])
             self.records[record_id] = record
             values = []
@@ -664,6 +740,11 @@ class ReferenceManager(ttk.Frame):
                     value = display_number(value)
                 values.append(value)
             self.tree.insert("", "end", iid=str(record_id), values=values)
+        self.record_count.set(f"Позиций: {len(self.records)}")
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(selected[0] if selected and self.tree.exists(selected[0]) else children[0])
+        self.show_inline()
 
     def selected(self) -> dict | None:
         selection = self.tree.selection()
@@ -727,13 +808,18 @@ class ReferencesTab(ttk.Frame):
             style="Muted.TLabel",
         ).pack(side="left", padx=16)
 
-        notebook = ttk.Notebook(self)
+        notebook = ttk.Notebook(self, style="Shell.TNotebook")
+        self.book = notebook
         notebook.pack(fill="both", expand=True, padx=18, pady=(0, 18))
         self.managers = []
         for table in ("materials", "cut_types", "extras"):
             manager = ReferenceManager(notebook, db, table, on_change)
             self.managers.append(manager)
             notebook.add(manager, text=REFERENCE_SPECS[table]["title"])
+        from part_catalog_ui import PartsManager
+        self.parts_manager = PartsManager(notebook, db, on_change)
+        self.managers.append(self.parts_manager)
+        notebook.add(self.parts_manager, text="Детали")
 
 
 class OrderTab(ttk.Frame):
@@ -1249,7 +1335,7 @@ class HistoryTab(ttk.Frame):
             anchor = "e" if key == "total" else ("w" if key == "customer" else "center")
             self.tree.heading(key, text=title, anchor=anchor)
             self.tree.column(key, width=width, anchor=anchor)
-        scroll = ttk.Scrollbar(content, orient="vertical", command=self.tree.yview)
+        scroll = AutoScrollbar(content, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
@@ -1321,201 +1407,266 @@ class Application(tk.Tk):
         self._build_shell()
 
     def _configure_styles(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure(".", font=("Segoe UI", 10), foreground=COLORS["text"])
-        style.configure("TFrame", background=COLORS["background"])
-        style.configure("TLabel", background=COLORS["background"])
-        style.configure("Field.TLabel", foreground="#42474b")
-        style.configure("Muted.TLabel", foreground=COLORS["muted"])
-        style.configure("Info.TLabel", background="#fff9da", foreground="#564b12", padding=8)
-        style.configure("Title.TLabel", font=("Segoe UI Semibold", 13))
-        style.configure("PageTitle.TLabel", font=("Segoe UI Semibold", 18))
-        style.configure(
-            "TButton",
-            padding=(12, 7),
-            borderwidth=1,
-            background="#eceeef",
-            relief="solid",
-        )
-        style.map("TButton", background=[("active", "#dfe2e4")])
-        style.configure(
-            "Accent.TButton",
-            background=COLORS["yellow"],
-            foreground="#1d1d1d",
-            bordercolor=COLORS["yellow_dark"],
-            padding=(14, 7),
-        )
-        style.map(
-            "Accent.TButton",
-            background=[("active", "#ffd52a"), ("pressed", COLORS["yellow_dark"])],
-        )
-        style.configure("TLabelframe", background=COLORS["background"], bordercolor=COLORS["border"])
-        style.configure(
-            "TLabelframe.Label",
-            background=COLORS["background"],
-            font=("Segoe UI Semibold", 10),
-        )
-        style.configure("TEntry", fieldbackground="white", padding=6)
-        style.configure("TCombobox", fieldbackground="white", padding=5)
-        style.configure(
-            "Treeview",
-            background="white",
-            fieldbackground="white",
-            rowheight=29,
-            bordercolor=COLORS["border"],
-        )
-        style.configure(
-            "Treeview.Heading",
-            background="#e5e8ea",
-            foreground=COLORS["text"],
-            font=("Segoe UI Semibold", 9),
-            padding=(7, 7),
-        )
-        style.map("Treeview", background=[("selected", COLORS["blue"])])
-        style.configure("TNotebook", background=COLORS["background"], borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(18, 9), background="#dfe2e4")
-        style.map("TNotebook.Tab", background=[("selected", "white")])
+        from ui_theme import apply_theme
+        apply_theme(self)
 
-    def _build_shell(self) -> None:
-        top = tk.Frame(self, bg=COLORS["yellow"], height=60)
-        top.pack(fill="x")
-        top.pack_propagate(False)
-        tk.Label(
-            top,
-            text="Р",
-            bg="#b8161d",
-            fg="white",
-            width=2,
-            font=("Segoe UI Black", 18),
-        ).pack(side="left", padx=(16, 9), pady=10)
-        tk.Label(
-            top,
-            text="РАСКРОЙ: УПРАВЛЕНИЕ",
-            bg=COLORS["yellow"],
-            fg="#202020",
-            font=("Segoe UI Semibold", 16),
-        ).pack(side="left")
-        tk.Label(
-            top,
-            text="локальная база заказов",
-            bg=COLORS["yellow"],
-            fg="#635100",
-            font=("Segoe UI", 9),
-        ).pack(side="left", padx=14, pady=(29, 0))
-
-        body = tk.Frame(self, bg=COLORS["background"])
-        body.pack(fill="both", expand=True)
-        sidebar = tk.Frame(body, bg=COLORS["sidebar"], width=155)
+    def _build_shell(self):
+        self.order_tabs = []
+        self.order_tab = None
+        self.status_var = tk.StringVar(value="Готово")
+        sidebar = tk.Frame(self, bg="white", width=185)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
+        tk.Label(sidebar, text="▣  Раскрой", bg="white", fg="#2868aa", font=("Segoe UI Semibold",16)).pack(anchor="w", padx=18, pady=22)
+        self.section_buttons = {}
+        for key, title in (("order","Состав и расчёт"),("history","История заказов"),("references","Справочники")):
+            btn = tk.Button(sidebar, text=title, anchor="w", relief="flat", borderwidth=0,
+                            bg="white", fg="#53677e", activebackground="#edf4fc", padx=18, pady=12,
+                            command=lambda k=key:self.show_section(k))
+            btn.pack(fill="x", padx=6)
+            self.section_buttons[key] = btn
+        ttk.Separator(sidebar).pack(fill="x", padx=16, pady=16)
+        self.side_caption=tk.Label(sidebar,text="ОПЕРАЦИИ ЗАКАЗА",bg="white",fg="#8290a3",font=("Segoe UI",8))
+        self.side_caption.pack(anchor="w",padx=18)
+        stage_canvas = tk.Canvas(sidebar,bg="white",highlightthickness=0)
+        self.stage_canvas=stage_canvas
+        stage_canvas.pack(fill="both",expand=True,pady=8)
+        stage_scroll = AutoScrollbar(stage_canvas,command=stage_canvas.yview)
+        stage_scroll.pack(side="right",fill="y")
+        stage_canvas.configure(yscrollcommand=stage_scroll.set)
+        stage_host = tk.Frame(stage_canvas,bg="white")
+        stage_canvas.create_window(0,0,anchor="nw",window=stage_host,width=168)
+        stage_host.bind("<Configure>",lambda e:stage_canvas.configure(scrollregion=stage_canvas.bbox("all")))
+        wheel_area(stage_canvas,stage_host)
+        self.stage_buttons = {}
+        for key,title in (("tree","Состав заказа"),("stages","Выбор этапов"),("laser","Лазерная резка"),("filing","Напилка"),("bending","Гибка"),("welding","Сварка"),("painting","Покраска"),("assembly","Сборка"),("packing","Упаковка"),("services","Услуги переработки")):
+            btn=tk.Button(stage_host,text=title,anchor="w",bg="white",fg="#66758a",relief="flat",borderwidth=0,padx=18,pady=9,
+                          command=lambda k=key:self.select_stage(k))
+            btn.pack(fill="x")
+            self.stage_buttons[key]=btn
+        main = ttk.Frame(self)
+        main.pack(side="left",fill="both",expand=True)
+        top = ttk.Frame(main, padding=(8,8))
+        top.pack(fill="x")
+        self.tab_canvas = tk.Canvas(top,height=44,bg="#f5f7fa",highlightthickness=0)
+        self.tab_canvas.pack(fill="x",expand=True)
+        tab_scroll = AutoScrollbar(top,orient="horizontal",command=self.tab_canvas.xview)
+        tab_scroll.pack(fill="x")
+        self.tab_canvas.configure(xscrollcommand=tab_scroll.set)
+        self.tab_strip = tk.Frame(self.tab_canvas,bg="#f5f7fa")
+        self.tab_canvas.create_window(0,2,anchor="nw",window=self.tab_strip,height=40)
+        self.tab_strip.bind("<Configure>",self._update_tab_strip)
+        self.tab_canvas.bind("<Configure>",lambda e:self.after_idle(self._show_active_order_tab))
+        status = ttk.Frame(main,padding=8)
+        status.pack(side="bottom",fill="x")
+        ttk.Label(status,textvariable=self.status_var,style="Muted.TLabel").pack(side="left")
+        self.notebook=ttk.Notebook(main,style="Shell.TNotebook")
+        self.notebook.pack(fill="both",expand=True,padx=8)
+        self.history_tab=HistoryTab(self.notebook,self.db)
+        self.history_tab.open_specification=self.open_specification
+        self.references_tab=ReferencesTab(self.notebook,self.db,self.refresh_all_references)
+        self.reference_nav=tk.Frame(sidebar,bg="white")
+        for manager in self.references_tab.managers:
+            tk.Button(self.reference_nav,text=manager.spec["title"],anchor="w",bg="white",fg="#53677e",relief="flat",borderwidth=0,padx=18,pady=12,
+                      command=lambda m=manager:self.references_tab.book.select(m)).pack(fill="x")
+        self.notebook.add(self.history_tab,text="История")
+        self.notebook.add(self.references_tab,text="Справочники")
+        state=self.db.get_state("open_order_tabs")
+        keys=state["keys"] if state else ["production_draft"]
+        self.restoring_tabs=True
+        for key in keys:
+            self.new_order_tab(draft_key=key)
+        if state:
+            active=next((t for t in self.order_tabs if t.draft_key==state.get("active")),None)
+            if active:
+                self.select_tab(active)
+        if not self.order_tabs:
+            self.show_section("history")
+        self.restoring_tabs=False
+        self._persist_tabs()
+        self.notebook.bind("<<NotebookTabChanged>>",self._sync_navigation)
 
-        main = ttk.Frame(body)
-        main.pack(side="left", fill="both", expand=True)
-        self.notebook = ttk.Notebook(main)
-        self.notebook.pack(fill="both", expand=True)
+    def allocate_number(self):
+        number=self.db.next_order_number()
+        prefix, sequence=number.rsplit("-",1)
+        used={r["number"] for r in self.db.list_orders()} | {t.order["number"] for t in self.order_tabs}
+        while number in used:
+            sequence=int(sequence)+1
+            number=f"{prefix}-{sequence:04d}"
+        return number
 
-        self.status_var = tk.StringVar(value="Готово")
-        status = tk.Frame(main, bg="#e2e5e7", height=26)
-        status.pack(fill="x", side="bottom")
-        tk.Label(
-            status,
-            textvariable=self.status_var,
-            bg="#e2e5e7",
-            fg=COLORS["muted"],
-            font=("Segoe UI", 9),
-        ).pack(side="left", padx=10, pady=3)
-        tk.Label(
-            status,
-            text="SQLite · данные сохраняются автоматически",
-            bg="#e2e5e7",
-            fg=COLORS["muted"],
-            font=("Segoe UI", 9),
-        ).pack(side="right", padx=10)
+    def new_order_tab(self, draft_key=None, order=None, order_id=None):
+        from production import new_order, uid
+        if draft_key is None:
+            draft_key="order_draft_"+uid()
+            if order is None:
+                order=new_order(self.allocate_number())
+                defaults=self.db.get_state("production_stage_defaults")
+                if defaults:
+                    order["stages"]=defaults
+            self.db.set_state(draft_key,{"order":order,"saved_id":order_id})
+        tab=ProductionTab(self.notebook,self.db,self.set_status,self.history_tab.refresh,DocumentPreview,draft_key=draft_key)
+        self.order_tabs.append(tab)
+        self.notebook.add(tab,text=tab.order["number"])
+        tab.number_var.trace_add("write",lambda *args:self._render_order_tabs())
+        tab.book.bind("<<NotebookTabChanged>>",lambda e:self._sync_navigation())
+        self.select_tab(tab)
+        return tab
 
-        self.history_tab = HistoryTab(self.notebook, self.db)
-        self.quick_order_tab = OrderTab(
-            self.notebook,
-            self.db,
-            self.set_status,
-            self.history_tab.refresh,
-        )
-        self.order_tab = ProductionTab(self.notebook, self.db, self.set_status,
-                                       self.history_tab.refresh, DocumentPreview)
-        self.history_tab.open_specification = self.open_specification
-        self.references_tab = ReferencesTab(
-            self.notebook,
-            self.db,
-            self.refresh_all_references,
-        )
-        self.notebook.add(self.order_tab, text="Заказ")
-        self.notebook.add(self.history_tab, text="История")
-        self.notebook.add(self.references_tab, text="Справочники")
-        self.notebook.add(self.quick_order_tab, text="Простой раскрой")
+    def _persist_tabs(self):
+        if getattr(self,"restoring_tabs",False):
+            return
+        self.db.set_state("open_order_tabs",{"keys":[t.draft_key for t in self.order_tabs],
+                         "active":self.order_tab.draft_key if self.order_tab else None})
 
-        tk.Label(
-            sidebar,
-            text="РАЗДЕЛЫ",
-            bg=COLORS["sidebar"],
-            fg="#aeb5ba",
-            font=("Segoe UI Semibold", 9),
-        ).pack(anchor="w", padx=18, pady=(22, 8))
-        self._nav_button(sidebar, "▣  Новый заказ", lambda: self.select_tab(self.order_tab))
-        self._nav_button(sidebar, "☷  История заказов", lambda: self.select_tab(self.history_tab))
-        self._nav_button(sidebar, "⚙  Справочники", lambda: self.select_tab(self.references_tab))
-        tk.Frame(sidebar, bg="#687077", height=1).pack(fill="x", padx=16, pady=18)
-        tk.Label(
-            sidebar,
-            text="Изделия и детали\nв одном заказе.\n\nНормы и тарифы\nзадаются по этапам.",
-            justify="left",
-            bg=COLORS["sidebar"],
-            fg="#c4c9cc",
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", padx=18)
+    def _render_order_tabs(self):
+        from ui_theme import IconButton
+        for widget in self.tab_strip.winfo_children():
+            widget.destroy()
+        self.order_tab_boxes = {}
+        for tab in self.order_tabs:
+            bg="white" if tab is self.order_tab else "#edf1f6"
+            box=tk.Frame(self.tab_strip,bg=bg)
+            self.order_tab_boxes[tab]=box
+            box.pack(side="left",padx=(0,5))
+            tk.Button(box,text=tab.number_var.get(),bg=bg,fg="#2868aa",activebackground="#e8f1fd",relief="flat",borderwidth=0,padx=14,pady=0,font=("Segoe UI",10),anchor="center",
+                      command=lambda t=tab:self.select_tab(t)).pack(side="left",fill="y")
+            IconButton(box,'close',lambda t=tab:self.close_order_tab(t),background=bg).pack(side='left')
+        IconButton(self.tab_strip,'plus',self.new_order_tab).pack(side='left',padx=(4,6))
+        self.after_idle(self._show_active_order_tab)
+
+    def _update_tab_strip(self,event=None):
+        self.tab_canvas.configure(scrollregion=self.tab_canvas.bbox('all'))
+        self.after_idle(self._show_active_order_tab)
+
+    def _show_active_order_tab(self):
+        box=getattr(self,'order_tab_boxes',{}).get(self.order_tab)
+        if box is None or not box.winfo_exists():
+            return
+        bounds=self.tab_canvas.bbox('all')
+        if not bounds or bounds[2]<=self.tab_canvas.winfo_width():
+            self.tab_canvas.xview_moveto(0)
+            return
+        left=self.tab_canvas.canvasx(0)
+        width=self.tab_canvas.winfo_width()
+        x=box.winfo_x()
+        right=x+box.winfo_width()+46
+        if x<left:
+            self.tab_canvas.xview_moveto(x/bounds[2])
+        elif right>left+width:
+            self.tab_canvas.xview_moveto(max(0,right-width)/bounds[2])
+
+    def close_order_tab(self, tab, confirm=True):
+        if not tab.flush():
+            self.select_tab(tab)
+            return False
+        stored=self.db.get_order(tab.saved_id) if tab.saved_id else None
+        if confirm and (tab.order["nodes"] or tab.order["laser_rows"] or tab.order["extras"]) and tab.order != stored:
+            answer=messagebox.askyesnocancel("Закрыть заказ","Сохранить изменения в историю перед закрытием?\nДа — сохранить, Нет — закрыть без записи в историю.",parent=self)
+            if answer is None:
+                return False
+            if answer:
+                tab.save_order()
+                if not tab.saved_id:
+                    return False
+        if tab.pending:
+            tab.after_cancel(tab.pending)
+            tab.pending=None
+        self.order_tabs.remove(tab)
+        self.notebook.forget(tab)
+        tab.destroy()
+        if self.order_tab is tab:
+            self.order_tab=self.order_tabs[-1] if self.order_tabs else None
+        if self.order_tab:
+            self.select_tab(self.order_tab)
+        else:
+            self.show_section("history")
+        self._persist_tabs()
+        self._render_order_tabs()
+        return True
+
+    def show_section(self,key):
+        if key=="order":
+            if not self.order_tab:
+                self.new_order_tab()
+            else:
+                self.select_tab(self.order_tab)
+        else:
+            self.select_tab(self.history_tab if key=="history" else self.references_tab)
+
+    def select_stage(self,key):
+        self.show_section("order")
+        self.order_tab.book.select(self.order_tab.tabs[key])
+        self._sync_navigation()
+
+    def _sync_navigation(self,event=None):
+        selected=self.notebook.select()
+        if selected==str(self.references_tab):
+            self.stage_canvas.pack_forget()
+            self.reference_nav.pack(fill="x",pady=8)
+            self.side_caption.configure(text="СПРАВОЧНИКИ")
+        else:
+            self.reference_nav.pack_forget()
+            self.stage_canvas.pack(fill="both",expand=True,pady=8)
+            self.side_caption.configure(text="ОПЕРАЦИИ ЗАКАЗА")
+        for key,btn in self.section_buttons.items():
+            active=(key=="order" and any(str(t)==selected for t in self.order_tabs)) or (key=="history" and selected==str(self.history_tab)) or (key=="references" and selected==str(self.references_tab))
+            btn.configure(bg="#edf4fc" if active else "white",fg="#2868aa" if active else "#53677e")
+        for key,btn in self.stage_buttons.items():
+            active=self.order_tab and selected==str(self.order_tab) and self.order_tab.book.select()==str(self.order_tab.tabs[key])
+            btn.configure(bg="#edf4fc" if active else "white",fg="#2868aa" if active else "#66758a")
+
+    def select_tab(self,tab):
+        self.notebook.select(tab)
+        if tab in self.order_tabs:
+            self.order_tab=tab
+        self._render_order_tabs()
+        self._sync_navigation()
+        self._persist_tabs()
 
     def refresh_all_references(self):
-        self.quick_order_tab.refresh_references()
-        self.order_tab.refresh_references()
+        for tab in self.order_tabs:
+            tab.refresh_references()
 
-    def open_specification(self, order, order_id):
-        if not self.order_tab.flush():
-            self.notebook.select(self.order_tab)
+    def add_catalog_parts(self, records):
+        from part_catalog import copy_to_order
+        if self.order_tab is None:
+            self.new_order_tab()
+        tab = self.order_tab
+        if not tab.flush():
+            self.select_tab(tab)
             return
-        if self.order_tab.order["nodes"] and not messagebox.askyesno(
-            "Открыть спецификацию", "Открыть выбранный заказ вместо текущего черновика? Несохранённые в историю изменения черновика будут заменены.", parent=self):
-            return
-        self.order_tab.load_order(order, order_id)
-        self.notebook.select(self.order_tab)
+        node = tab.selected_node()
+        parent = node['id'] if node and node['kind']=='assembly' else (node.get('parent_id','') if node else '')
+        copies = copy_to_order(records,parent)
+        tab.order['nodes'].extend(copies)
+        tab.refresh()
+        self.select_tab(tab)
+        tab.book.select(tab.tabs['tree'])
+        tab.tree.selection_set(copies[0]['id'])
+        tab.tree.see(copies[0]['id'])
+        self.set_status(f'Добавлено деталей из справочника: {len(copies)}')
 
-    def _nav_button(self, parent: tk.Widget, text: str, command) -> None:
-        button = tk.Button(
-            parent,
-            text=text,
-            command=command,
-            anchor="w",
-            bg=COLORS["sidebar"],
-            fg="white",
-            activebackground=COLORS["sidebar_hover"],
-            activeforeground="white",
-            relief="flat",
-            borderwidth=0,
-            font=("Segoe UI", 10),
-            padx=12,
-            pady=11,
-            cursor="hand2",
-        )
-        button.pack(fill="x")
-
-    def select_tab(self, tab: ttk.Frame) -> None:
-        self.notebook.select(tab)
+    def open_specification(self,order,order_id):
+        existing=next((t for t in self.order_tabs if t.saved_id==order_id),None)
+        if existing:
+            self.select_tab(existing)
+        else:
+            self.new_order_tab(order=order,order_id=order_id)
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
 
     def on_close(self) -> None:
-        if hasattr(self, "order_tab") and not self.order_tab.flush():
-            if not messagebox.askyesno("Некорректные параметры", "В полях есть ошибки. Закрыть окно без сохранения некорректных значений?", parent=self):
+        for tab in self.order_tabs:
+            if not tab.flush():
+                self.select_tab(tab)
+                messagebox.showwarning("Проверьте параметры", "Исправьте ошибки заказа перед закрытием. Остальные черновики сохранены.", parent=self)
                 return
+        self._persist_tabs()
+        for tab in self.order_tabs:
+            if tab.pending:
+                tab.after_cancel(tab.pending)
         self.db.close()
         self.destroy()
 

@@ -44,12 +44,41 @@ def run_gui_checks(output_dir, fixture_dir=None):
             application.report_callback_exception = lambda kind, error, traceback: errors.append(repr(error))
             application.update()
             tab = application.order_tab
+            manager = application.references_tab.managers[0]
+            first = manager.selected()
+            manager.search_var.set(first["name"])
+            application.update()
+            assert manager.tree.get_children()
+            manager.inline_vars["price_sheet"].set("nan")
+            manager.save_inline()
+            assert manager.inline_error.get()
+            manager.inline_vars["price_sheet"].set(str(first["price_sheet"]))
+            manager.save_inline()
+            assert not manager.inline_error.get()
+            manager.search_var.set("")
+            application.select_tab(application.references_tab)
+            application.update()
+            assert application.notebook.select() == str(application.references_tab)
+            application.select_tab(tab)
             order = sample_specification(application.db)
             tab.load_order(order, None)
             application.update()
             assert len(tab.stages_tree.get_children()) == 34
             assert len(tab.tabs) == 10
             assert tab.calculate()["calculation"]["quantity"] == 16
+            second = application.new_order_tab()
+            assert second.order["number"] != tab.order["number"]
+            second.customer_var.set("Другой заказчик")
+            assert second.flush()
+            assert tab.order["customer"] != second.order["customer"]
+            assert application.db.get_state(second.draft_key)["order"]["customer"] == "Другой заказчик"
+            application.select_stage("painting")
+            assert second.book.select() == str(second.tabs["painting"])
+            assert application.close_order_tab(second, confirm=False)
+            assert application.order_tab is tab
+            tab.tree.selection_set(order["nodes"][1]["id"])
+            application.update()
+            assert tab.node_title.get() == "Полка"
             tab.edit_finance()
             finance_dialog = next(w for w in tab.winfo_children() if isinstance(w, FormDialog))
             finance_dialog.variables["vat"].set("22")
@@ -121,11 +150,14 @@ def run_gui_checks(output_dir, fixture_dir=None):
                 assert "Стеллаж" in html and "Всего сумма заказа с НДС:" in html
                 doc.destroy()
             # Old calculation remains available.
-            legacy = application.quick_order_tab.calculate(show_error=False)
+            from app import OrderTab
+            legacy_tab = OrderTab(application, application.db, application.set_status, application.history_tab.refresh)
+            legacy = legacy_tab.calculate(show_error=False)
             assert legacy and legacy["totals"]["grand"] > 0
             legacy_preview = DocumentPreview(tab, legacy, "report")
             application.update()
             legacy_preview.destroy()
+            legacy_tab.destroy()
             import_summary = ""
             if fixture_dir:
                 from cam_import import read_batch
@@ -178,6 +210,34 @@ def run_gui_checks(output_dir, fixture_dir=None):
                     assert "Sekirus.pdf" in document_html(tab.order, "report")
                     doc.destroy()
                 import_summary = "import=13 files,9 nests,41 unique parts,152 pieces,4 duplicate pairs; cancel,preview,pricing,history,documents=OK\n"
+            library = application.references_tab.parts_manager
+            application.show_section("references")
+            application.references_tab.book.select(library)
+            library.add_folder()
+            folder_dialog = next(w for w in library.winfo_children() if isinstance(w, FormDialog))
+            folder_dialog.variables["name"].set("Шкаф для проверки")
+            folder_dialog.save()
+            library.edit_part()
+            part_dialog = next(w for w in library.winfo_children() if isinstance(w, FormDialog))
+            part_dialog.variables["name"].set("Полка из справочника")
+            part_dialog.save()
+            application.update()
+            assert len(library.parts) == 1
+            if fixture_dir:
+                from part_catalog import import_candidates
+                preview = library.preview_import(batch, import_candidates(batch), library.destination())
+                preview.import_tree.selection_set(preview.import_tree.get_children()[:2])
+                preview.confirm_import()
+                assert len(library.parts) == 3
+            scratch = application.new_order_tab()
+            library.tree.selection_set("p" + str(next(iter(library.parts))))
+            library.add_to_order()
+            assert len(scratch.order["nodes"]) == 1
+            assert scratch.order["nodes"][0]["catalog_id"]
+            assert application.close_order_tab(scratch, confirm=False)
+            assert not errors, errors
+            from ui_checks import check_scrolling
+            check_scrolling(application)
             assert not errors, errors
             return f"OK\nstages=34\ntabs=10\nparts={tab.order['calculation']['quantity']}\ntotal={tab.order['totals']['grand']}\nchecks=dialogs,calculations,flags,draft,history,documents,legacy\n" + import_summary
         finally:

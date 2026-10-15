@@ -60,6 +60,18 @@ class Database:
                 key TEXT PRIMARY KEY,
                 payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS part_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                parent_id INTEGER REFERENCES part_folders(id) ON DELETE RESTRICT
+            );
+            CREATE TABLE IF NOT EXISTS part_catalog (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder_id INTEGER REFERENCES part_folders(id) ON DELETE RESTRICT,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                source_key TEXT UNIQUE
+            );
             """
         )
         self.connection.commit()

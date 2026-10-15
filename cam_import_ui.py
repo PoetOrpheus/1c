@@ -4,6 +4,7 @@ from pathlib import Path
 import tkinter as tk
 import sqlite3
 from tkinter import ttk, messagebox
+from ui_theme import AutoScrollbar
 
 from cam_import import aggregate_parts, apply_import, default_mapping
 from production import numeric, calculate_production
@@ -106,7 +107,7 @@ class ImportPreview(tk.Toplevel):
             ("mapping", "Действие / позиция заказа", 230, "w")])
         self.parts_tree.bind("<Double-1>", lambda e: self.edit_mapping())
         text = tk.Text(info_tab, wrap="word", font=("Segoe UI", 10), padx=10, pady=10)
-        scroll = ttk.Scrollbar(info_tab, command=text.yview)
+        scroll = AutoScrollbar(info_tab, command=text.yview)
         scroll.pack(side="right", fill="y")
         text.configure(yscrollcommand=scroll.set)
         text.pack(fill="both", expand=True)
